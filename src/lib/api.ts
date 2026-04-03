@@ -1,4 +1,5 @@
 ﻿import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import type {
   Template, TemplateSprint, TemplateSprintWithSections,
   SharedSection, SharedSectionItem, SectionWithItems,
@@ -147,7 +148,9 @@ export async function apiUpdateProjectItem(input: { id: number; checked?: boolea
 }
 
 export async function apiToggleProjectItem(id: number): Promise<ProjectItem> {
-  return invoke<ProjectItem>('toggle_project_item', { id });
+  const result = await invoke<ProjectItem>('toggle_project_item', { id });
+  await emit('project-item-toggled', { itemId: id, checked: result.checked });
+  return result;
 }
 
 export async function apiAddProjectSection(input: { sprint_id: number; name: string; description?: string; linked_from_section_id?: number }): Promise<ProjectSprintSection> {

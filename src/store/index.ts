@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { listen } from '@tauri-apps/api/event';
 import * as api from '../lib/api';
 import type {
   Template, Project, ProjectSprintWithSections,
@@ -378,3 +379,33 @@ export const useStore = create<AppState>((set, get) => ({
   setEditingProjectId: (id) => set({ editingProjectId: id }),
   clearError: () => set({ error: null }),
 }));
+
+// Listen for events from the active window and update cached data in-place
+listen('project-item-toggled', (event: { payload: { itemId: number; checked: boolean } }) => {
+  const { itemId, checked } = event.payload;
+  const state = useStore.getState();
+  const updated = new Map(state.projectSprints);
+  let changed = false;
+  for (const [projectId, sprints] of updated.entries()) {
+    const newSprints = sprints.map((sprint) => {
+      const newSections = sprint.sections.map((section) => {
+        const newItems = section.items.map((item) => {
+          if (item.id === itemId) {
+            changed = true;
+            return { ...item, checked };
+          }
+          return item;
+        });
+        return { ...section, items: newItems };
+      });
+      return { ...sprint, sections: newSections };
+    });
+    if (changed) {
+      updated.set(projectId, newSprints);
+      break;
+    }
+  }
+  if (changed) {
+    useStore.setState({ projectSprints: updated });
+  }
+}).catch(() => {});
