@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../../store';
-import { apiCreateTemplate, apiAddTemplateSprint, apiGetSharedSprintWithSections } from '../../lib/api';
+import { apiCreateTemplate, apiAddTemplateSprint, apiGetSharedSprintWithSections, apiListTemplateSprints, apiGetTemplateSprintWithSections } from '../../lib/api';
 import { Modal } from '../shared/Modal';
+import { SearchInput } from '../shared/SearchInput';
+import { MiniSearchInput } from '../shared/MiniSearchInput';
 
 type SprintAddMode = 'custom' | 'shared';
 type SectionAddMode = 'custom' | 'shared';
@@ -14,7 +16,6 @@ export function TemplatesView() {
   const fetchTemplates = useStore((s) => s.fetchTemplates);
   const fetchSharedSections = useStore((s) => s.fetchSharedSections);
   const fetchSharedSprints = useStore((s) => s.fetchSharedSprints);
-  const fetchTemplateSprints = useStore((s) => s.fetchTemplateSprints);
   const deleteTemplate = useStore((s) => s.deleteTemplate);
   const addTemplateSprint = useStore((s) => s.addTemplateSprint);
   const deleteTemplateSprint = useStore((s) => s.deleteTemplateSprint);
@@ -43,11 +44,38 @@ export function TemplatesView() {
   const [customSectionItems, setCustomSectionItems] = useState<string[]>([]);
   const [newItemInput, setNewItemInput] = useState('');
 
+  const [search, setSearch] = useState('');
+  const [sectionSearch, setSectionSearch] = useState('');
+  const [sprintSearch, setSprintSearch] = useState('');
+
   useEffect(() => {
     fetchTemplates();
     fetchSharedSections();
     fetchSharedSprints();
   }, []);
+
+  useEffect(() => {
+    if (templates.length === 0) return;
+    (async () => {
+      const sprintMap = new Map(useStore.getState().templateSprints);
+      for (const template of templates) {
+        if (!sprintMap.has(template.id)) {
+          try {
+            const sprints = await apiListTemplateSprints(template.id);
+            const details = [];
+            for (const s of sprints) {
+              try {
+                const detail = await apiGetTemplateSprintWithSections(s.id);
+                details.push(detail);
+              } catch { /* skip */ }
+            }
+            sprintMap.set(template.id, details);
+          } catch { /* skip */ }
+        }
+      }
+      useStore.setState({ templateSprints: sprintMap });
+    })();
+  }, [templates]);
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
@@ -65,7 +93,21 @@ export function TemplatesView() {
       return;
     }
     setExpandedTemplateId(id);
-    await fetchTemplateSprints(id);
+    if (!templateSprints.has(id)) {
+      try {
+        const sprints = await apiListTemplateSprints(id);
+        const details = [];
+        for (const s of sprints) {
+          try {
+            const detail = await apiGetTemplateSprintWithSections(s.id);
+            details.push(detail);
+          } catch { /* skip */ }
+        }
+        useStore.setState({
+          templateSprints: new Map(useStore.getState().templateSprints).set(id, details),
+        });
+      } catch { /* skip */ }
+    }
   };
 
   const handleAddSprint = async (templateId: number) => {
@@ -112,6 +154,10 @@ export function TemplatesView() {
   };
 
   const sectionMap = new Map(sharedSections.map((s) => [s.id, s]));
+  const q = search.toLowerCase();
+  const filteredTemplates = templates.filter((t) =>
+    t.name.toLowerCase().includes(q) || t.description.toLowerCase().includes(q),
+  );
 
   return (
     <div>
@@ -119,25 +165,33 @@ export function TemplatesView() {
         <h2 className="text-xl font-semibold">Templates</h2>
         <button
           onClick={() => setShowCreate(true)}
-          className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+          className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
         >
           + New Template
         </button>
       </div>
 
-      {templates.length === 0 ? (
+      <div className="mb-4">
+        <SearchInput value={search} onChange={setSearch} placeholder="Search templates..." />
+      </div>
+
+      {filteredTemplates.length === 0 ? (
         <div className="text-center py-16">
-          <p className="text-gray-400 text-lg mb-4">No templates yet</p>
-          <button
-            onClick={() => setShowCreate(true)}
-            className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
-          >
-            Create your first template
-          </button>
+          <p className="text-gray-400 text-lg mb-4">
+            {templates.length === 0 ? 'No templates yet' : 'No templates match your search'}
+          </p>
+          {templates.length === 0 && (
+            <button
+              onClick={() => setShowCreate(true)}
+              className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+            >
+              Create your first template
+            </button>
+          )}
         </div>
       ) : (
         <div className="space-y-3">
-          {templates.map((template) => {
+          {filteredTemplates.map((template) => {
             const sprints = templateSprints.get(template.id) ?? [];
             const isExpanded = expandedTemplateId === template.id;
             return (
@@ -248,53 +302,20 @@ export function TemplatesView() {
                                 <div className="space-y-2">
                                   <div className="flex gap-1 bg-gray-100 rounded p-0.5 w-fit">
                                     <button
-                                      onClick={() => setSectionAddMode('shared')}
-                                      className={`text-xs px-2 py-1 rounded ${sectionAddMode === 'shared' ? 'bg-white shadow-sm' : 'text-gray-500'}`}
-                                    >
-                                      From Shared
-                                    </button>
-                                    <button
                                       onClick={() => setSectionAddMode('custom')}
                                       className={`text-xs px-2 py-1 rounded ${sectionAddMode === 'custom' ? 'bg-white shadow-sm' : 'text-gray-500'}`}
                                     >
                                       Custom
                                     </button>
+                                    <button
+                                      onClick={() => setSectionAddMode('shared')}
+                                      className={`text-xs px-2 py-1 rounded ${sectionAddMode === 'shared' ? 'bg-white shadow-sm' : 'text-gray-500'}`}
+                                    >
+                                      From Shared
+                                    </button>
                                   </div>
 
-                                  {sectionAddMode === 'shared' ? (
-                                    <div className="flex gap-2 flex-wrap">
-                                      <select
-                                        value={selectedSectionId}
-                                        onChange={(e) => setSelectedSectionId(Number(e.target.value))}
-                                        className="flex-1 text-sm border rounded px-2 py-1"
-                                      >
-                                        <option value={0}>Select section</option>
-                                        {sharedSections.map((s) => (
-                                          <option key={s.id} value={s.id}>{s.name}</option>
-                                        ))}
-                                      </select>
-                                      <label className="flex items-center gap-1 text-xs">
-                                        <input
-                                          type="checkbox"
-                                          checked={sectionLinkMode}
-                                          onChange={(e) => setSectionLinkMode(e.target.checked)}
-                                        />
-                                        Link
-                                      </label>
-                                      <button
-                                        onClick={() => handleAddSection(sprint.sprint.id, template.id)}
-                                        className="text-xs px-2 py-1 bg-indigo-600 text-white rounded hover:bg-indigo-700"
-                                      >
-                                        Add
-                                      </button>
-                                      <button
-                                        onClick={() => { setAddingSectionToSprint(null); setSelectedSectionId(0); }}
-                                        className="text-xs px-2 py-1 border rounded hover:bg-gray-50"
-                                      >
-                                        Cancel
-                                      </button>
-                                    </div>
-                                  ) : (
+                                  {sectionAddMode === 'custom' ? (
                                     <div className="space-y-2">
                                       <input
                                         value={customSectionName}
@@ -341,22 +362,54 @@ export function TemplatesView() {
                                           </button>
                                         </div>
                                       </div>
-                                      <div className="flex gap-2">
-                                        <button
-                                          onClick={() => handleAddSection(sprint.sprint.id, template.id)}
-                                          className="text-xs px-2 py-1 bg-indigo-600 text-white rounded hover:bg-indigo-700"
-                                        >
-                                          Create Section
-                                        </button>
-                                        <button
-                                          onClick={() => { setAddingSectionToSprint(null); setCustomSectionName(''); setCustomSectionItems([]); }}
-                                          className="text-xs px-2 py-1 border rounded hover:bg-gray-50"
-                                        >
-                                          Cancel
-                                        </button>
-                                      </div>
                                     </div>
-                                  )}
+                                  ) : (
+                                    <div className="space-y-2">
+                                      <MiniSearchInput value={sectionSearch} onChange={setSectionSearch} placeholder="Search sections..." />
+                                      <div className="flex gap-2 flex-wrap">
+                                        <select
+                                          value={selectedSectionId}
+                                          onChange={(e) => setSelectedSectionId(Number(e.target.value))}
+                                          className="flex-1 text-sm border rounded px-2 py-1"
+                                        >
+                                          <option value={0}>Select section</option>
+                                          {sharedSections
+                                            .filter((s) => s.name.toLowerCase().includes(sectionSearch.toLowerCase()))
+                                            .map((s) => (
+                                              <option key={s.id} value={s.id}>{s.name}</option>
+                                            ))}
+                                        </select>
+                                      <label className="flex items-center gap-1 text-xs">
+                                        <input
+                                          type="checkbox"
+                                          checked={sectionLinkMode}
+                                          onChange={(e) => setSectionLinkMode(e.target.checked)}
+                                        />
+                                        Link
+                                      </label>
+                                    </div>
+                                  </div>
+                                )}
+
+                                  <div className="flex gap-2">
+                                    <button
+                                      onClick={() => handleAddSection(sprint.sprint.id, template.id)}
+                                      className="text-xs px-3 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700"
+                                    >
+                                      Add Section
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        setAddingSectionToSprint(null);
+                                        setCustomSectionName('');
+                                        setCustomSectionItems([]);
+                                        setSelectedSectionId(0);
+                                      }}
+                                      className="text-xs px-3 py-1.5 border rounded hover:bg-gray-50"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
                                 </div>
                               ) : (
                                 <button
@@ -395,28 +448,32 @@ export function TemplatesView() {
                               value={newSprintName}
                               onChange={(e) => setNewSprintName(e.target.value)}
                               placeholder="Sprint name"
-                              className="w-full text-sm border rounded px-3 py-2 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                              className="w-full text-sm border rounded px-3 py-2"
                               autoFocus
                             />
                             <input
                               value={newSprintDesc}
                               onChange={(e) => setNewSprintDesc(e.target.value)}
                               placeholder="Description (optional)"
-                              className="w-full text-sm border rounded px-3 py-2 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                              className="w-full text-sm border rounded px-3 py-2"
                             />
                           </>
                         ) : (
-                          <div className="flex gap-2">
-                            <select
-                              value={selectedSharedSprintId}
-                              onChange={(e) => setSelectedSharedSprintId(Number(e.target.value))}
-                              className="flex-1 text-sm border rounded px-2 py-2"
-                            >
-                              <option value={0}>Select shared sprint</option>
-                              {sharedSprints.map((s) => (
-                                <option key={s.id} value={s.id}>{s.name}</option>
-                              ))}
-                            </select>
+                          <div className="space-y-2">
+                            <MiniSearchInput value={sprintSearch} onChange={setSprintSearch} placeholder="Search shared sprints..." />
+                            <div className="flex gap-2">
+                              <select
+                                value={selectedSharedSprintId}
+                                onChange={(e) => setSelectedSharedSprintId(Number(e.target.value))}
+                                className="flex-1 text-sm border rounded px-2 py-2"
+                              >
+                                <option value={0}>Select shared sprint</option>
+                                {sharedSprints
+                                  .filter((s) => s.name.toLowerCase().includes(sprintSearch.toLowerCase()))
+                                  .map((s) => (
+                                    <option key={s.id} value={s.id}>{s.name}</option>
+                                  ))}
+                              </select>
                             <label className="flex items-center gap-1 text-xs">
                               <input
                                 type="checkbox"
@@ -425,6 +482,7 @@ export function TemplatesView() {
                               />
                               Link
                             </label>
+                          </div>
                           </div>
                         )}
 

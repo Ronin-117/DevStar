@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../../store';
 import { Modal } from '../shared/Modal';
+import { SearchInput } from '../shared/SearchInput';
 
 export function SharedSectionsView() {
   const sharedSections = useStore((s) => s.sharedSections);
@@ -17,10 +18,29 @@ export function SharedSectionsView() {
   const [description, setDescription] = useState('');
   const [color, setColor] = useState('#6b7280');
   const [newItemTitle, setNewItemTitle] = useState('');
+  const [search, setSearch] = useState('');
 
   useEffect(() => {
     fetchSharedSections();
   }, []);
+
+  // Fetch item counts for all sections on mount
+  useEffect(() => {
+    if (sharedSections.length === 0) return;
+    (async () => {
+      const { apiGetSharedSectionWithItems } = await import('../../lib/api');
+      const detailMap = new Map(useStore.getState().sharedSectionDetail);
+      for (const section of sharedSections) {
+        if (!detailMap.has(section.id)) {
+          try {
+            const detail = await apiGetSharedSectionWithItems(section.id);
+            detailMap.set(section.id, detail);
+          } catch { /* skip */ }
+        }
+      }
+      useStore.setState({ sharedSectionDetail: detailMap });
+    })();
+  }, [sharedSections]);
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,6 +72,11 @@ export function SharedSectionsView() {
     setNewItemTitle('');
   };
 
+  const q = search.toLowerCase();
+  const filteredSections = sharedSections.filter((s) =>
+    s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q),
+  );
+
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
@@ -64,19 +89,27 @@ export function SharedSectionsView() {
         </button>
       </div>
 
-      {sharedSections.length === 0 ? (
+      <div className="mb-4">
+        <SearchInput value={search} onChange={setSearch} placeholder="Search sections..." />
+      </div>
+
+      {filteredSections.length === 0 ? (
         <div className="text-center py-16">
-          <p className="text-gray-400 text-lg mb-4">No shared sections yet</p>
-          <button
-            onClick={() => setShowCreate(true)}
-            className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
-          >
-            Create one
-          </button>
+          <p className="text-gray-400 text-lg mb-4">
+            {sharedSections.length === 0 ? 'No shared sections yet' : 'No sections match your search'}
+          </p>
+          {sharedSections.length === 0 && (
+            <button
+              onClick={() => setShowCreate(true)}
+              className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+            >
+              Create one
+            </button>
+          )}
         </div>
       ) : (
         <div className="space-y-3">
-          {sharedSections.map((section) => {
+          {filteredSections.map((section) => {
             const detail = sharedSectionDetail.get(section.id);
             return (
               <div key={section.id} className="bg-white border rounded-xl overflow-hidden">

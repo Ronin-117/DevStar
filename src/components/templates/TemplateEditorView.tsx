@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../../store';
 import type { SharedSprintWithSections } from '../../lib/types';
+import { MiniSearchInput } from '../shared/MiniSearchInput';
 
 export function TemplateEditorView() {
   const selectedTemplateId = useStore((s) => s.selectedTemplateId);
@@ -27,6 +28,8 @@ export function TemplateEditorView() {
   const [selectedSprintId, setSelectedSprintId] = useState(0);
   const [isLinked, setIsLinked] = useState(true);
   const [sharedSprintDetail, setSharedSprintDetail] = useState<SharedSprintWithSections | null>(null);
+  const [sectionSearch, setSectionSearch] = useState('');
+  const [sprintSearch, setSprintSearch] = useState('');
 
   const template = templates.find((t) => t.id === selectedTemplateId);
   const sprints = selectedTemplateId ? templateSprints.get(selectedTemplateId) : undefined;
@@ -169,29 +172,37 @@ export function TemplateEditorView() {
                 </div>
 
                 {sectionSource === 'shared' && (
-                  <select
-                    value={selectedSectionId}
-                    onChange={(e) => setSelectedSectionId(Number(e.target.value))}
-                    className="w-full text-sm border rounded px-2 py-1"
-                  >
-                    <option value={0}>Select section</option>
-                    {sharedSections.map((s) => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
-                    ))}
-                  </select>
+                  <div className="space-y-2">
+                    <MiniSearchInput value={sectionSearch} onChange={setSectionSearch} placeholder="Search sections..." />
+                    <select
+                      value={selectedSectionId}
+                      onChange={(e) => setSelectedSectionId(Number(e.target.value))}
+                      className="w-full text-sm border rounded px-2 py-1"
+                    >
+                      <option value={0}>Select section</option>
+                      {sharedSections
+                        .filter((s) => s.name.toLowerCase().includes(sectionSearch.toLowerCase()))
+                        .map((s) => (
+                          <option key={s.id} value={s.id}>{s.name}</option>
+                        ))}
+                    </select>
+                  </div>
                 )}
 
                 {sectionSource === 'shared-sprint' && (
                   <div className="space-y-2">
+                    <MiniSearchInput value={sprintSearch} onChange={setSprintSearch} placeholder="Search shared sprints..." />
                     <select
                       value={selectedSprintId}
                       onChange={(e) => handleSelectSprint(Number(e.target.value))}
                       className="w-full text-sm border rounded px-2 py-1"
                     >
                       <option value={0}>Select sprint</option>
-                      {sharedSprints.map((s) => (
-                        <option key={s.id} value={s.id}>{s.name}</option>
-                      ))}
+                      {sharedSprints
+                        .filter((s) => s.name.toLowerCase().includes(sprintSearch.toLowerCase()))
+                        .map((s) => (
+                          <option key={s.id} value={s.id}>{s.name}</option>
+                        ))}
                     </select>
                     {sharedSprintDetail && (
                       <div className="text-xs text-gray-500">

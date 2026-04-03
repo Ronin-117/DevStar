@@ -88,20 +88,22 @@ src/components/
   templates/     TemplatesView.tsx, TemplateEditorView.tsx,
                  SharedSectionsView.tsx, SharedSprintsView.tsx
   shared/        Checkbox.tsx, CollapsibleSection.tsx,
-                 Modal.tsx, ProgressBar.tsx, TitleBar.tsx
+                 Modal.tsx, ProgressBar.tsx, TitleBar.tsx,
+                 SearchInput.tsx, MiniSearchInput.tsx
 ```
 
 ### Cross-Window Sync
 
 - `apiToggleProjectItem()` emits `project-item-toggled` event via Tauri
 - Store listens and updates cached `projectSprints` Map in-place
+- Progress map (`projectProgressMap`) also updated on toggle
 - No full refetch, no scroll jump, no flicker
 
 ### Tauri Backend
 
 - Rust source in `src-tauri/src/`
 - DB: SQLite at `src-tauri/src/db/` with schema in `schema.sql`
-- Seed data in `seed.rs` (6 shared sections, 5 shared sprints, 3 templates)
+- Seed data in `src/db/seeds/` — 10 shared sections, 8 shared sprints, 12 templates (see docs/SEED_DATA.md)
 - Window management: `toggle_mode`, `set_active_window_compact`, `set_active_window_full`
 - Sprint auto-advance: `check_and_advance_sprint`, `complete_sprint` (marks all items done + advances)
 - Crate name: `projecttracker_lib` (internal identifier)
@@ -114,3 +116,13 @@ src/components/
 - **Projects**: Created from templates, track sprint progress with status badges.
 - **Live Mode**: Compact floating window showing active sprint with checkable items. Minimize to a round indigo button; restore to full panel. Auto-advances sprints on completion.
 - **Navigation**: Top tabs `Projects | Library`. Library sub-tabs: `Templates | Shared Sections | Shared Sprints` (always visible).
+- **Search**: Lightweight search on all Library tabs. Mini search on all shared item dropdowns (section/sprint selectors).
+
+### Seed Data
+
+On first run (and every run currently), the DB is wiped and re-seeded with:
+- **10 shared sections** (10 items each): Planning, Security, Testing, CI/CD, Docs, Code Quality, Performance, Monitoring, Database, Accessibility
+- **8 shared sprints**: Planning & Setup, Security & Quality, Testing & QA, CI/CD & Deployment, Monitoring & Ops, Performance, Database, Accessibility & UX
+- **12 templates** with 8-12 sprints each: Full-Stack Web, Mobile App, Desktop App, Game Dev, Embedded/IoT, API & Backend, Data Science/AI, Cloud & Infra, Systems Programming, Enterprise Systems, Security Software, Tools & Libraries
+
+See `docs/SEED_DATA.md` for complete details.

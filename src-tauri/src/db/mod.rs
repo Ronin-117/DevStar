@@ -1,6 +1,6 @@
 pub mod project_sprints;
 pub mod projects;
-pub mod seed;
+pub mod seeds;
 pub mod shared_sections;
 pub mod shared_sprints;
 pub mod template_sprints;

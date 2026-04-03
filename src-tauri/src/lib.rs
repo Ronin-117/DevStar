@@ -735,7 +735,23 @@ pub fn run() {
     let db = Database::new(&db_path_str).expect("Failed to initialize database");
     {
         let conn = db.conn.lock().unwrap();
-        db::seed::seed_if_empty(&conn).expect("Failed to seed database");
+        // Wipe and re-seed with new comprehensive data
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             DELETE FROM project_items;
+             DELETE FROM project_sprint_sections;
+             DELETE FROM project_sprints;
+             DELETE FROM projects;
+             DELETE FROM template_sprint_sections;
+             DELETE FROM template_sprints;
+             DELETE FROM templates;
+             DELETE FROM shared_sprint_sections;
+             DELETE FROM shared_sprints;
+             DELETE FROM shared_section_items;
+             DELETE FROM shared_sections;
+             PRAGMA foreign_keys = ON;"
+        ).expect("Failed to wipe database");
+        db::seeds::seed_all(&conn).expect("Failed to seed database");
     }
     let rate_limiter = RateLimiter::new(30.0, 5.0);
 

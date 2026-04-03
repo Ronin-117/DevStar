@@ -14,6 +14,7 @@ import {
   apiToggleProjectItem,
 } from '../../lib/api';
 import { CollapsibleSection } from '../shared/CollapsibleSection';
+import { MiniSearchInput } from '../shared/MiniSearchInput';
 
 type SectionAddMode = 'custom' | 'shared';
 type SprintAddMode = 'custom' | 'shared';
@@ -38,6 +39,8 @@ export function ProjectDetailView() {
   const [customSectionName, setCustomSectionName] = useState('');
   const [customSectionItems, setCustomSectionItems] = useState<string[]>([]);
   const [newItemInput, setNewItemInput] = useState('');
+  const [sectionSearch, setSectionSearch] = useState('');
+  const [sprintSearch, setSprintSearch] = useState('');
 
   const [sprintAddMode, setSprintAddMode] = useState<SprintAddMode>('custom');
   const [showAddSprint, setShowAddSprint] = useState(false);
@@ -286,17 +289,21 @@ export function ProjectDetailView() {
                         </div>
                       </div>
                     ) : (
-                      <div className="flex gap-2 flex-wrap">
-                        <select
-                          value={selectedSectionId}
-                          onChange={(e) => setSelectedSectionId(Number(e.target.value))}
-                          className="flex-1 text-sm border rounded px-2 py-1"
-                        >
-                          <option value={0}>Select section</option>
-                          {sharedSections.map((s) => (
-                            <option key={s.id} value={s.id}>{s.name}</option>
-                          ))}
-                        </select>
+                      <div className="space-y-2">
+                        <MiniSearchInput value={sectionSearch} onChange={setSectionSearch} placeholder="Search sections..." />
+                        <div className="flex gap-2 flex-wrap">
+                          <select
+                            value={selectedSectionId}
+                            onChange={(e) => setSelectedSectionId(Number(e.target.value))}
+                            className="flex-1 text-sm border rounded px-2 py-1"
+                          >
+                            <option value={0}>Select section</option>
+                            {sharedSections
+                              .filter((s) => s.name.toLowerCase().includes(sectionSearch.toLowerCase()))
+                              .map((s) => (
+                                <option key={s.id} value={s.id}>{s.name}</option>
+                              ))}
+                          </select>
                         <label className="flex items-center gap-1 text-xs">
                           <input
                             type="checkbox"
@@ -305,6 +312,7 @@ export function ProjectDetailView() {
                           />
                           Link
                         </label>
+                      </div>
                       </div>
                     )}
 
@@ -367,17 +375,21 @@ export function ProjectDetailView() {
                   />
                 </>
               ) : (
-                <div className="flex gap-2">
-                  <select
-                    value={selectedSharedSprintId}
-                    onChange={(e) => setSelectedSharedSprintId(Number(e.target.value))}
-                    className="flex-1 text-sm border rounded px-2 py-2"
-                  >
-                    <option value={0}>Select shared sprint</option>
-                    {sharedSprints.map((s) => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
-                    ))}
-                  </select>
+                <div className="space-y-2">
+                  <MiniSearchInput value={sprintSearch} onChange={setSprintSearch} placeholder="Search shared sprints..." />
+                  <div className="flex gap-2">
+                    <select
+                      value={selectedSharedSprintId}
+                      onChange={(e) => setSelectedSharedSprintId(Number(e.target.value))}
+                      className="flex-1 text-sm border rounded px-2 py-2"
+                    >
+                      <option value={0}>Select shared sprint</option>
+                      {sharedSprints
+                        .filter((s) => s.name.toLowerCase().includes(sprintSearch.toLowerCase()))
+                        .map((s) => (
+                          <option key={s.id} value={s.id}>{s.name}</option>
+                        ))}
+                    </select>
                   <label className="flex items-center gap-1 text-xs">
                     <input
                       type="checkbox"
@@ -386,6 +398,7 @@ export function ProjectDetailView() {
                     />
                     Link
                   </label>
+                </div>
                 </div>
               )}
 

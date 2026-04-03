@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../../store';
 import { Modal } from '../shared/Modal';
+import { SearchInput } from '../shared/SearchInput';
+import { MiniSearchInput } from '../shared/MiniSearchInput';
 import { apiCreateSharedSection, apiAddSharedSectionItem } from '../../lib/api';
 
 export function SharedSprintsView() {
@@ -31,11 +33,41 @@ export function SharedSprintsView() {
   const [customSectionName, setCustomSectionName] = useState('');
   const [customSectionItems, setCustomSectionItems] = useState<string[]>([]);
   const [newItemInput, setNewItemInput] = useState('');
+  const [search, setSearch] = useState('');
+  const [sectionSearch, setSectionSearch] = useState('');
 
   useEffect(() => {
     fetchSharedSprints();
     fetchSharedSections();
   }, []);
+
+  // Fetch sprint details (section counts) and section details (item counts) on mount
+  useEffect(() => {
+    if (sharedSprints.length === 0) return;
+    (async () => {
+      const { apiGetSharedSprintWithSections, apiGetSharedSectionWithItems } = await import('../../lib/api');
+      const sprintDetailMap = new Map(useStore.getState().sharedSprintDetail);
+      const sectionDetailMap = new Map(useStore.getState().sharedSectionDetail);
+      for (const sprint of sharedSprints) {
+        if (!sprintDetailMap.has(sprint.id)) {
+          try {
+            const detail = await apiGetSharedSprintWithSections(sprint.id);
+            sprintDetailMap.set(sprint.id, detail);
+            // Also fetch item counts for each section in this sprint
+            for (const ss of detail.sections) {
+              if (!sectionDetailMap.has(ss.section_id)) {
+                try {
+                  const secDetail = await apiGetSharedSectionWithItems(ss.section_id);
+                  sectionDetailMap.set(ss.section_id, secDetail);
+                } catch { /* skip */ }
+              }
+            }
+          } catch { /* skip */ }
+        }
+      }
+      useStore.setState({ sharedSprintDetail: sprintDetailMap, sharedSectionDetail: sectionDetailMap });
+    })();
+  }, [sharedSprints]);
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
@@ -103,6 +135,11 @@ export function SharedSprintsView() {
     setCustomSectionItems([]);
   };
 
+  const q = search.toLowerCase();
+  const filteredSprints = sharedSprints.filter((s) =>
+    s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q),
+  );
+
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
@@ -115,19 +152,27 @@ export function SharedSprintsView() {
         </button>
       </div>
 
-      {sharedSprints.length === 0 ? (
+      <div className="mb-4">
+        <SearchInput value={search} onChange={setSearch} placeholder="Search sprints..." />
+      </div>
+
+      {filteredSprints.length === 0 ? (
         <div className="text-center py-16">
-          <p className="text-gray-400 text-lg mb-4">No shared sprints yet</p>
-          <button
-            onClick={() => setShowCreate(true)}
-            className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
-          >
-            Create one
-          </button>
+          <p className="text-gray-400 text-lg mb-4">
+            {sharedSprints.length === 0 ? 'No shared sprints yet' : 'No sprints match your search'}
+          </p>
+          {sharedSprints.length === 0 && (
+            <button
+              onClick={() => setShowCreate(true)}
+              className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+            >
+              Create one
+            </button>
+          )}
         </div>
       ) : (
         <div className="space-y-3">
-          {sharedSprints.map((sprint) => {
+          {filteredSprints.map((sprint) => {
             const detail = sharedSprintDetail.get(sprint.id);
             return (
               <div key={sprint.id} className="bg-white border rounded-xl overflow-hidden">
@@ -135,7 +180,7 @@ export function SharedSprintsView() {
                   onClick={() => handleExpandSprint(sprint.id)}
                   className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50"
                 >
-                  <div>
+                  <div className="text-left">
                     <h3 className="font-medium text-sm">{sprint.name}</h3>
                     {sprint.description && (
                       <p className="text-xs text-gray-500">{sprint.description}</p>
@@ -261,16 +306,20 @@ export function SharedSprintsView() {
                         </div>
 
                         {sectionAddMode === 'shared' ? (
-                          <div className="flex gap-2 flex-wrap">
-                            <select
-                              value={selectedSectionId}
-                              onChange={(e) => setSelectedSectionId(Number(e.target.value))}
-                              className="flex-1 text-sm border rounded px-2 py-1"
-                            >
-                              <option value={0}>Select section</option>
-                              {sharedSections.map((s) => (
-                                <option key={s.id} value={s.id}>{s.name}</option>
-                              ))}
+                          <div className="space-y-2">
+                            <MiniSearchInput value={sectionSearch} onChange={setSectionSearch} placeholder="Search sections..." />
+                            <div className="flex gap-2 flex-wrap">
+                              <select
+                                value={selectedSectionId}
+                                onChange={(e) => setSelectedSectionId(Number(e.target.value))}
+                                className="flex-1 text-sm border rounded px-2 py-1"
+                              >
+                                <option value={0}>Select section</option>
+                                {sharedSections
+                                  .filter((s) => s.name.toLowerCase().includes(sectionSearch.toLowerCase()))
+                                  .map((s) => (
+                                    <option key={s.id} value={s.id}>{s.name}</option>
+                                  ))}
                             </select>
                             <label className="flex items-center gap-1 text-xs">
                               <input
@@ -292,6 +341,7 @@ export function SharedSprintsView() {
                             >
                               Cancel
                             </button>
+                          </div>
                           </div>
                         ) : (
                           <div className="space-y-2">

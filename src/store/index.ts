@@ -405,13 +405,13 @@ listen('project-item-toggled', (event: { payload: { itemId: number; checked: boo
   const { itemId, checked } = event.payload;
   const state = useStore.getState();
   const updated = new Map(state.projectSprints);
-  let changed = false;
+  let changedProjectId: number | null = null;
   for (const [projectId, sprints] of updated.entries()) {
     const newSprints = sprints.map((sprint) => {
       const newSections = sprint.sections.map((section) => {
         const newItems = section.items.map((item) => {
           if (item.id === itemId) {
-            changed = true;
+            changedProjectId = projectId;
             return { ...item, checked };
           }
           return item;
@@ -420,12 +420,27 @@ listen('project-item-toggled', (event: { payload: { itemId: number; checked: boo
       });
       return { ...sprint, sections: newSections };
     });
-    if (changed) {
+    if (changedProjectId !== null) {
       updated.set(projectId, newSprints);
       break;
     }
   }
-  if (changed) {
-    useStore.setState({ projectSprints: updated });
+  if (changedProjectId !== null) {
+    const newSprints = updated.get(changedProjectId);
+    if (newSprints) {
+      const totalChecked = newSprints.reduce(
+        (sum, s) => sum + s.sections.reduce((s2, sec) => s2 + sec.items.filter((i) => i.checked).length, 0),
+        0,
+      );
+      const totalItems = newSprints.reduce(
+        (sum, s) => sum + s.sections.reduce((s2, sec) => s2 + sec.items.length, 0),
+        0,
+      );
+      const progressMap = new Map(state.projectProgressMap);
+      progressMap.set(changedProjectId, [totalChecked, totalItems]);
+      useStore.setState({ projectSprints: updated, projectProgressMap: progressMap });
+    } else {
+      useStore.setState({ projectSprints: updated });
+    }
   }
 }).catch(() => {});
