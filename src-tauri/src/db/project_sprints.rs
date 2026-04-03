@@ -162,6 +162,62 @@ pub fn delete_item(conn: &Connection, id: i64) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Check if all items in the active sprint are done. If so, mark it done
+/// and advance to the next sprint (mark it active).
+pub fn check_and_advance_sprint(
+    conn: &Connection,
+    project_id: i64,
+) -> Result<Option<ProjectSprint>, AppError> {
+    // Get the active sprint
+    let active = get_active(conn, project_id)?;
+    let active = match active {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+
+    // Count total and checked items in this sprint
+    let (total, checked): (i64, i64) = conn.query_row(
+        "SELECT \
+           (SELECT count(*) FROM project_items pi JOIN project_sprint_sections ps ON pi.section_id = ps.id WHERE ps.sprint_id = ?1), \
+           (SELECT count(*) FROM project_items pi JOIN project_sprint_sections ps ON pi.section_id = ps.id WHERE ps.sprint_id = ?1 AND pi.checked = 1)",
+        [active.id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+
+    // If not all items are checked, nothing to do
+    if total == 0 || checked < total {
+        return Ok(None);
+    }
+
+    // Mark current sprint as done
+    set_status(conn, active.id, "done".to_string())?;
+
+    // Find the next pending sprint
+    let mut next_stmt = conn.prepare(
+        "SELECT id, project_id, name, description, status, sort_order, is_custom FROM project_sprints WHERE project_id = ?1 AND status = 'pending' ORDER BY sort_order LIMIT 1",
+    )?;
+    let next_sprint = next_stmt
+        .query_row([project_id], |row| {
+            Ok(ProjectSprint {
+                id: row.get(0)?,
+                project_id: row.get(1)?,
+                name: row.get(2)?,
+                description: row.get(3)?,
+                status: row.get(4)?,
+                sort_order: row.get(5)?,
+                is_custom: row.get::<_, i64>(6)? != 0,
+            })
+        })
+        .ok();
+
+    if let Some(next) = next_sprint {
+        set_status(conn, next.id, "active".to_string())?;
+        Ok(Some(next))
+    } else {
+        Ok(None)
+    }
+}
+
 // Internal helpers
 fn get_sections(conn: &Connection, sprint_id: i64) -> Result<Vec<ProjectSprintSection>, AppError> {
     let mut stmt = conn.prepare(

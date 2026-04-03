@@ -429,6 +429,17 @@ async fn toggle_project_item(
 }
 
 #[tauri::command]
+async fn check_and_advance_sprint(
+    state: tauri::State<'_, AppState>,
+    window: tauri::Window,
+    project_id: i64,
+) -> Result<Option<ProjectSprint>, String> {
+    check_rate_limit(&state, window.label())?;
+    let conn = state.db.conn.lock().unwrap();
+    db::project_sprints::check_and_advance_sprint(&conn, project_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn add_project_section(
     state: tauri::State<'_, AppState>,
     window: tauri::Window,
@@ -726,6 +737,7 @@ pub fn run() {
             get_project_progress,
             update_project_item,
             toggle_project_item,
+            check_and_advance_sprint,
             add_project_section,
             add_project_item,
             delete_project_item,

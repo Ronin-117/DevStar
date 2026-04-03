@@ -8,6 +8,7 @@ import {
   apiDeleteProjectSection,
   apiSetActiveWindowCompact,
   apiSetActiveWindowFull,
+  apiCheckAndAdvanceSprint,
 } from '../../lib/api';
 import { CollapsibleSection } from '../shared/CollapsibleSection';
 import type { ProjectSprintWithSections } from '../../lib/types';
@@ -143,7 +144,10 @@ export function ActiveMode() {
               section={section}
               projectId={projectId}
               onToggleItem={(itemId) => {
-                apiToggleProjectItem(itemId).then(() => refresh()).catch(() => {});
+                apiToggleProjectItem(itemId)
+                  .then(() => apiCheckAndAdvanceSprint(projectId))
+                  .then(() => refresh())
+                  .catch(() => {});
               }}
               onAddItem={(input) => {
                 apiAddProjectItem(input).then(() => refresh()).catch(() => {});

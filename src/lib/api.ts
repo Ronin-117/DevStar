@@ -1,12 +1,10 @@
-import { invoke } from '@tauri-apps/api/core';
+﻿import { invoke } from '@tauri-apps/api/core';
 import type {
   Template, TemplateSprint, TemplateSprintWithSections,
   SharedSection, SharedSectionItem, SectionWithItems,
   SharedSprint, SharedSprintWithSections,
-  Project, ProjectSprintWithSections, ProjectItem, ProjectSprintSection,
+  Project, ProjectSprintWithSections, ProjectItem, ProjectSprintSection, ProjectSprint,
 } from './types';
-
-// --- Templates ---
 
 export async function apiListTemplates(): Promise<Template[]> {
   return invoke<Template[]>('list_templates');
@@ -23,8 +21,6 @@ export async function apiUpdateTemplate(id: number, name?: string, description?:
 export async function apiDeleteTemplate(id: number): Promise<void> {
   return invoke<void>('delete_template', { id });
 }
-
-// --- Template Sprints ---
 
 export async function apiListTemplateSprints(templateId: number): Promise<TemplateSprint[]> {
   return invoke<TemplateSprint[]>('list_template_sprints', { templateId });
@@ -53,8 +49,6 @@ export async function apiAddTemplateSprintSection(sprintId: number, sectionId: n
 export async function apiDeleteTemplateSprintSection(id: number): Promise<void> {
   return invoke<void>('delete_template_sprint_section', { id });
 }
-
-// --- Shared Sections ---
 
 export async function apiListSharedSections(): Promise<SharedSection[]> {
   return invoke<SharedSection[]>('list_shared_sections');
@@ -88,8 +82,6 @@ export async function apiDeleteSharedSectionItem(id: number): Promise<void> {
   return invoke<void>('delete_shared_section_item', { id });
 }
 
-// --- Shared Sprints ---
-
 export async function apiListSharedSprints(): Promise<SharedSprint[]> {
   return invoke<SharedSprint[]>('list_shared_sprints');
 }
@@ -118,8 +110,6 @@ export async function apiDeleteSharedSprintSection(id: number): Promise<void> {
   return invoke<void>('delete_shared_sprint_section', { id });
 }
 
-// --- Projects ---
-
 export async function apiListProjects(): Promise<Project[]> {
   return invoke<Project[]>('list_projects');
 }
@@ -132,8 +122,6 @@ export async function apiDeleteProject(id: number): Promise<void> {
   return invoke<void>('delete_project', { id });
 }
 
-// --- Project Sprints ---
-
 export async function apiListProjectSprints(projectId: number): Promise<ProjectSprintWithSections[]> {
   return invoke<ProjectSprintWithSections[]>('list_project_sprints', { projectId });
 }
@@ -142,18 +130,17 @@ export async function apiSetSprintStatus(sprintId: number, status: string): Prom
   return invoke<void>('set_sprint_status', { sprintId, status });
 }
 
-export async function apiGetActiveSprint(projectId: number): Promise<ProjectSprintWithSections | null> {
-  const sprint = await invoke<{ id: number } | null>('get_active_sprint', { projectId });
-  if (!sprint) return null;
-  const all = await invoke<ProjectSprintWithSections[]>('list_project_sprints', { projectId });
-  return all.find((s) => s.sprint.id === sprint.id) ?? null;
+export async function apiGetActiveSprint(projectId: number): Promise<ProjectSprint | null> {
+  return invoke<ProjectSprint | null>('get_active_sprint', { projectId });
 }
 
 export async function apiGetProjectProgress(projectId: number): Promise<[number, number]> {
   return invoke<[number, number]>('get_project_progress', { projectId });
 }
 
-// --- Project Sections/Items ---
+export async function apiCheckAndAdvanceSprint(projectId: number): Promise<ProjectSprint | null> {
+  return invoke<ProjectSprint | null>('check_and_advance_sprint', { projectId });
+}
 
 export async function apiUpdateProjectItem(input: { id: number; checked?: boolean; notes?: string }): Promise<ProjectItem> {
   return invoke<ProjectItem>('update_project_item', { input });
@@ -179,8 +166,6 @@ export async function apiDeleteProjectSection(id: number): Promise<void> {
   return invoke<void>('delete_project_section', { id });
 }
 
-// --- Window ---
-
 export async function apiToggleMode(mode: 'management' | 'active'): Promise<void> {
   const rustMode = mode === 'management' ? 'Management' : 'Active';
   await invoke<void>('toggle_mode', { mode: rustMode });
@@ -198,18 +183,18 @@ export async function apiMinimizeWindow(): Promise<void> {
   return invoke<void>('minimize_window');
 }
 
-export async function apiSetActiveWindowCompact(): Promise<void> {
-  return invoke<void>('set_active_window_compact');
-}
-
-export async function apiSetActiveWindowFull(): Promise<void> {
-  return invoke<void>('set_active_window_full');
-}
-
 export async function apiToggleMaximizeWindow(): Promise<void> {
   return invoke<void>('toggle_maximize_window');
 }
 
 export async function apiGetWindowLabel(): Promise<string> {
   return invoke<string>('get_window_label');
+}
+
+export async function apiSetActiveWindowCompact(): Promise<void> {
+  return invoke<void>('set_active_window_compact');
+}
+
+export async function apiSetActiveWindowFull(): Promise<void> {
+  return invoke<void>('set_active_window_full');
 }
