@@ -22,6 +22,7 @@ interface AppState {
   sharedSectionDetail: Map<number, SectionWithItems>;
   sharedSprintDetail: Map<number, SharedSprintWithSections>;
   projectProgressMap: Map<number, [number, number]>;
+  currentSprintMap: Map<number, string>;
 
   // UI
   view: 'projects' | 'library' | 'template-editor';
@@ -88,6 +89,7 @@ export const useStore = create<AppState>((set, get) => ({
   sharedSectionDetail: new Map(),
   sharedSprintDetail: new Map(),
   projectProgressMap: new Map(),
+  currentSprintMap: new Map(),
   view: 'projects',
   libraryTab: 'templates',
   selectedProjectId: null,
@@ -126,8 +128,26 @@ export const useStore = create<AppState>((set, get) => ({
     if (!silent) set({ loading: true, error: null });
     try {
       const sprints = await api.apiListProjectSprints(projectId);
+      const activeSprint = sprints.find((s) => s.sprint.status === 'active');
+      const currentSprintMap = new Map(get().currentSprintMap);
+      if (activeSprint) {
+        currentSprintMap.set(projectId, `Sprint ${activeSprint.sprint.sort_order + 1}: ${activeSprint.sprint.name}`);
+      }
+      // Update progress map from fetched data
+      const progressMap = new Map(get().projectProgressMap);
+      const totalChecked = sprints.reduce(
+        (sum, s) => sum + s.sections.reduce((s2, sec) => s2 + sec.items.filter((i) => i.checked).length, 0),
+        0,
+      );
+      const totalItems = sprints.reduce(
+        (sum, s) => sum + s.sections.reduce((s2, sec) => s2 + sec.items.length, 0),
+        0,
+      );
+      progressMap.set(projectId, [totalChecked, totalItems]);
       set({
         projectSprints: new Map(get().projectSprints).set(projectId, sprints),
+        currentSprintMap,
+        projectProgressMap: progressMap,
         loading: false,
       });
     } catch (e: unknown) {

@@ -1,22 +1,50 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../../store';
-import { apiToggleMode } from '../../lib/api';
+import {
+  apiToggleMode,
+  apiCompleteSprint,
+  apiAddProjectSprint,
+  apiAddSharedSprintToProject,
+  apiAddProjectSection,
+  apiCreateSharedSection,
+  apiAddSharedSectionItem,
+  apiAddProjectItem,
+  apiDeleteProjectItem,
+  apiDeleteProjectSection,
+  apiToggleProjectItem,
+} from '../../lib/api';
 import { CollapsibleSection } from '../shared/CollapsibleSection';
+
+type SectionAddMode = 'custom' | 'shared';
+type SprintAddMode = 'custom' | 'shared';
 
 export function ProjectDetailView() {
   const selectedProjectId = useStore((s) => s.selectedProjectId);
   const projectSprints = useStore((s) => s.projectSprints);
   const projects = useStore((s) => s.projects);
   const templates = useStore((s) => s.templates);
+  const sharedSections = useStore((s) => s.sharedSections);
+  const sharedSprints = useStore((s) => s.sharedSprints);
   const loading = useStore((s) => s.loading);
   const error = useStore((s) => s.error);
   const clearError = useStore((s) => s.clearError);
   const fetchProjectDetail = useStore((s) => s.fetchProjectDetail);
   const setEditingProjectId = useStore((s) => s.setEditingProjectId);
-  const setSprintStatus = useStore((s) => s.setSprintStatus);
 
+  const [sectionAddMode, setSectionAddMode] = useState<SectionAddMode>('custom');
   const [addingSectionSprintId, setAddingSectionSprintId] = useState<number | null>(null);
-  const [newSectionName, setNewSectionName] = useState('');
+  const [selectedSectionId, setSelectedSectionId] = useState(0);
+  const [sectionLinked, setSectionLinked] = useState(false);
+  const [customSectionName, setCustomSectionName] = useState('');
+  const [customSectionItems, setCustomSectionItems] = useState<string[]>([]);
+  const [newItemInput, setNewItemInput] = useState('');
+
+  const [sprintAddMode, setSprintAddMode] = useState<SprintAddMode>('custom');
+  const [showAddSprint, setShowAddSprint] = useState(false);
+  const [selectedSharedSprintId, setSelectedSharedSprintId] = useState(0);
+  const [sprintLinked, setSprintLinked] = useState(false);
+  const [customSprintName, setCustomSprintName] = useState('');
+  const [customSprintDesc, setCustomSprintDesc] = useState('');
 
   const project = projects.find((p) => p.id === selectedProjectId);
   const template = templates.find((t) => t.id === (project?.template_id ?? 0));
@@ -24,7 +52,7 @@ export function ProjectDetailView() {
 
   useEffect(() => {
     if (selectedProjectId) fetchProjectDetail(selectedProjectId);
-  }, [selectedProjectId, fetchProjectDetail]);
+  }, [selectedProjectId]);
 
   if (!project || !sprints) return null;
 
@@ -37,11 +65,46 @@ export function ProjectDetailView() {
     0,
   );
 
-  const handleAddSection = (sprintId: number) => {
-    if (!newSectionName.trim()) return;
-    useStore.getState().addProjectSection({ sprint_id: sprintId, name: newSectionName.trim() }, selectedProjectId!);
-    setNewSectionName('');
+  const refresh = () => fetchProjectDetail(selectedProjectId!, true);
+
+  const handleAddSection = async (sprintId: number) => {
+    if (sectionAddMode === 'custom') {
+      if (!customSectionName.trim()) return;
+      const section = await apiCreateSharedSection({ name: customSectionName.trim(), description: '' });
+      for (const item of customSectionItems) {
+        if (item.trim()) {
+          await apiAddSharedSectionItem({ section_id: section.id, title: item.trim() });
+        }
+      }
+      await apiAddProjectSection({ sprint_id: sprintId, name: section.name });
+    } else {
+      if (!selectedSectionId) return;
+      await apiAddProjectSection({
+        sprint_id: sprintId,
+        name: '',
+        linked_from_section_id: sectionLinked ? selectedSectionId : undefined,
+      });
+    }
+    refresh();
     setAddingSectionSprintId(null);
+    setSelectedSectionId(0);
+    setCustomSectionName('');
+    setCustomSectionItems([]);
+  };
+
+  const handleAddSprint = async () => {
+    if (sprintAddMode === 'custom') {
+      if (!customSprintName.trim()) return;
+      await apiAddProjectSprint(selectedProjectId!, customSprintName.trim(), customSprintDesc.trim());
+    } else {
+      if (!selectedSharedSprintId) return;
+      await apiAddSharedSprintToProject(selectedProjectId!, selectedSharedSprintId, sprintLinked);
+    }
+    refresh();
+    setShowAddSprint(false);
+    setCustomSprintName('');
+    setCustomSprintDesc('');
+    setSelectedSharedSprintId(0);
   };
 
   return (
@@ -95,8 +158,6 @@ export function ProjectDetailView() {
       ) : (
         <div className="space-y-6">
           {sprints.map((sprint) => {
-            const sprintChecked = sprint.sections.reduce((sum, s) => sum + s.items.filter((i) => i.checked).length, 0);
-            const sprintTotal = sprint.sections.reduce((sum, s) => sum + s.items.length, 0);
             const statusColor = sprint.sprint.status === 'active'
               ? 'bg-blue-100 text-blue-700'
               : sprint.sprint.status === 'done'
@@ -113,19 +174,16 @@ export function ProjectDetailView() {
                     <span className={`text-xs px-2 py-0.5 rounded-full ${statusColor}`}>
                       {sprint.sprint.status}
                     </span>
+                    {sprint.sprint.status === 'active' && (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 font-medium">
+                        Current Sprint
+                      </span>
+                    )}
                   </div>
                   <div className="flex gap-2">
-                    {sprint.sprint.status === 'pending' && (
-                      <button
-                        onClick={() => setSprintStatus(sprint.sprint.id, 'active', selectedProjectId!)}
-                        className="text-xs px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
-                      >
-                        Start
-                      </button>
-                    )}
                     {sprint.sprint.status === 'active' && (
                       <button
-                        onClick={() => setSprintStatus(sprint.sprint.id, 'done', selectedProjectId!)}
+                        onClick={() => apiCompleteSprint(sprint.sprint.id, selectedProjectId!).then(refresh).catch(() => {})}
                         className="text-xs px-2 py-1 bg-green-600 text-white rounded hover:bg-green-700"
                       >
                         Complete
@@ -146,39 +204,219 @@ export function ProjectDetailView() {
                       key={section.section.id}
                       section={section}
                       projectId={selectedProjectId!}
+                      onToggleItem={(itemId) => {
+                        apiToggleProjectItem(itemId).then(refresh).catch(() => {});
+                      }}
+                      onAddItem={(input) => {
+                        apiAddProjectItem(input).then(refresh).catch(() => {});
+                      }}
+                      onDeleteItem={(itemId) => {
+                        apiDeleteProjectItem(itemId).then(refresh).catch(() => {});
+                      }}
+                      onDeleteSection={(sectionId) => {
+                        apiDeleteProjectSection(sectionId).then(refresh).catch(() => {});
+                      }}
                     />
                   ))}
                 </div>
 
-                {sprintChecked}/{sprintTotal}
-
                 {addingSectionSprintId === sprint.sprint.id && (
-                  <div className="mt-3 flex gap-2">
-                    <input
-                      value={newSectionName}
-                      onChange={(e) => setNewSectionName(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && handleAddSection(sprint.sprint.id)}
-                      placeholder="Section name..."
-                      className="flex-1 text-sm border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      autoFocus
-                    />
-                    <button
-                      onClick={() => handleAddSection(sprint.sprint.id)}
-                      className="px-3 py-2 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
-                    >
-                      Add
-                    </button>
-                    <button
-                      onClick={() => { setAddingSectionSprintId(null); setNewSectionName(''); }}
-                      className="px-3 py-2 text-sm border rounded-md hover:bg-gray-50"
-                    >
-                      Cancel
-                    </button>
+                  <div className="mt-3 border rounded-lg p-3 space-y-2">
+                    <div className="flex gap-1 bg-gray-100 rounded p-0.5 w-fit">
+                      <button
+                        onClick={() => setSectionAddMode('custom')}
+                        className={`text-xs px-2 py-1 rounded ${sectionAddMode === 'custom' ? 'bg-white shadow-sm' : 'text-gray-500'}`}
+                      >
+                        Custom
+                      </button>
+                      <button
+                        onClick={() => setSectionAddMode('shared')}
+                        className={`text-xs px-2 py-1 rounded ${sectionAddMode === 'shared' ? 'bg-white shadow-sm' : 'text-gray-500'}`}
+                      >
+                        From Shared
+                      </button>
+                    </div>
+
+                    {sectionAddMode === 'custom' ? (
+                      <div className="space-y-2">
+                        <input
+                          value={customSectionName}
+                          onChange={(e) => setCustomSectionName(e.target.value)}
+                          placeholder="Section name"
+                          className="w-full text-sm border rounded px-2 py-1"
+                          autoFocus
+                        />
+                        <div className="space-y-1">
+                          {customSectionItems.map((item, i) => (
+                            <div key={i} className="flex items-center gap-2 px-2 py-1 bg-gray-50 rounded">
+                              <span className="text-xs flex-1">{item}</span>
+                              <button
+                                onClick={() => setCustomSectionItems((prev) => prev.filter((_, idx) => idx !== i))}
+                                className="text-gray-400 hover:text-red-500 text-xs"
+                              >
+                                &times;
+                              </button>
+                            </div>
+                          ))}
+                          <div className="flex gap-2">
+                            <input
+                              value={newItemInput}
+                              onChange={(e) => setNewItemInput(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && newItemInput.trim()) {
+                                  setCustomSectionItems((prev) => [...prev, newItemInput.trim()]);
+                                  setNewItemInput('');
+                                }
+                              }}
+                              placeholder="Item title..."
+                              className="flex-1 text-xs border rounded px-2 py-1"
+                            />
+                            <button
+                              onClick={() => {
+                                if (newItemInput.trim()) {
+                                  setCustomSectionItems((prev) => [...prev, newItemInput.trim()]);
+                                  setNewItemInput('');
+                                }
+                              }}
+                              className="text-xs px-2 py-1 border rounded hover:bg-gray-50"
+                            >
+                              +
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex gap-2 flex-wrap">
+                        <select
+                          value={selectedSectionId}
+                          onChange={(e) => setSelectedSectionId(Number(e.target.value))}
+                          className="flex-1 text-sm border rounded px-2 py-1"
+                        >
+                          <option value={0}>Select section</option>
+                          {sharedSections.map((s) => (
+                            <option key={s.id} value={s.id}>{s.name}</option>
+                          ))}
+                        </select>
+                        <label className="flex items-center gap-1 text-xs">
+                          <input
+                            type="checkbox"
+                            checked={sectionLinked}
+                            onChange={(e) => setSectionLinked(e.target.checked)}
+                          />
+                          Link
+                        </label>
+                      </div>
+                    )}
+
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleAddSection(sprint.sprint.id)}
+                        className="text-xs px-3 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700"
+                      >
+                        Add Section
+                      </button>
+                      <button
+                        onClick={() => {
+                          setAddingSectionSprintId(null);
+                          setCustomSectionName('');
+                          setCustomSectionItems([]);
+                          setSelectedSectionId(0);
+                        }}
+                        className="text-xs px-3 py-1.5 border rounded hover:bg-gray-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
             );
           })}
+
+          {showAddSprint ? (
+            <div className="border rounded-xl p-4 space-y-2">
+              <div className="flex gap-1 bg-gray-100 rounded p-0.5 w-fit">
+                <button
+                  onClick={() => setSprintAddMode('custom')}
+                  className={`text-xs px-2 py-1 rounded ${sprintAddMode === 'custom' ? 'bg-white shadow-sm' : 'text-gray-500'}`}
+                >
+                  Custom
+                </button>
+                <button
+                  onClick={() => setSprintAddMode('shared')}
+                  className={`text-xs px-2 py-1 rounded ${sprintAddMode === 'shared' ? 'bg-white shadow-sm' : 'text-gray-500'}`}
+                >
+                  From Shared
+                </button>
+              </div>
+
+              {sprintAddMode === 'custom' ? (
+                <>
+                  <input
+                    value={customSprintName}
+                    onChange={(e) => setCustomSprintName(e.target.value)}
+                    placeholder="Sprint name"
+                    className="w-full text-sm border rounded px-3 py-2"
+                    autoFocus
+                  />
+                  <input
+                    value={customSprintDesc}
+                    onChange={(e) => setCustomSprintDesc(e.target.value)}
+                    placeholder="Description (optional)"
+                    className="w-full text-sm border rounded px-3 py-2"
+                  />
+                </>
+              ) : (
+                <div className="flex gap-2">
+                  <select
+                    value={selectedSharedSprintId}
+                    onChange={(e) => setSelectedSharedSprintId(Number(e.target.value))}
+                    className="flex-1 text-sm border rounded px-2 py-2"
+                  >
+                    <option value={0}>Select shared sprint</option>
+                    {sharedSprints.map((s) => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </select>
+                  <label className="flex items-center gap-1 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={sprintLinked}
+                      onChange={(e) => setSprintLinked(e.target.checked)}
+                    />
+                    Link
+                  </label>
+                </div>
+              )}
+
+              <div className="flex gap-2">
+                <button
+                  onClick={handleAddSprint}
+                  className="text-sm px-3 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700"
+                >
+                  Add Sprint
+                </button>
+                <button
+                  onClick={() => {
+                    setShowAddSprint(false);
+                    setCustomSprintName('');
+                    setCustomSprintDesc('');
+                    setSelectedSharedSprintId(0);
+                  }}
+                  className="text-sm px-3 py-1.5 border rounded hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowAddSprint(true)}
+              className="w-full py-3 text-sm text-indigo-600 border-2 border-dashed border-indigo-200 rounded-xl hover:bg-indigo-50 transition-colors"
+            >
+              + Add Sprint
+            </button>
+          )}
         </div>
       )}
     </div>

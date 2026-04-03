@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "projecttracker",
+  "productName": "DevStar",
   "version": "0.1.0",
   "identifier": "com.njne2.projecttracker",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "management",
-        "title": "ProjectTracker",
+        "title": "DevStar",
         "width": 1200,
         "height": 800,
         "resizable": true,

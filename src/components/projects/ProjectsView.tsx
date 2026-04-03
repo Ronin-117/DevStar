@@ -8,6 +8,7 @@ export function ProjectsView() {
   const projects = useStore((s) => s.projects);
   const templates = useStore((s) => s.templates);
   const projectProgressMap = useStore((s) => s.projectProgressMap);
+  const currentSprintMap = useStore((s) => s.currentSprintMap);
   const setSelectedProjectId = useStore((s) => s.setSelectedProjectId);
   const setEditingProjectId = useStore((s) => s.setEditingProjectId);
   const deleteProject = useStore((s) => s.deleteProject);
@@ -83,7 +84,12 @@ export function ProjectsView() {
                     &times;
                   </button>
                 </div>
-                <p className="text-xs text-gray-500 mb-3">{template?.name ?? 'Unknown template'}</p>
+                <p className="text-xs text-gray-500 mb-2">{template?.name ?? 'Unknown template'}</p>
+                {currentSprintMap.has(project.id) && (
+                  <span className="inline-block text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600 font-medium mb-2">
+                    {currentSprintMap.get(project.id)}
+                  </span>
+                )}
                 <ProgressBar checked={checked} total={total} size="sm" color="bg-indigo-600" />
               </div>
             );

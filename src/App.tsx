@@ -69,7 +69,7 @@ function App() {
       <TitleBar />
       <header className="bg-white border-b px-6 py-3 flex items-center justify-between shrink-0" style={{ appRegion: 'drag' } as React.CSSProperties}>
         <div className="flex items-center gap-4">
-          <h1 className="text-lg font-bold text-gray-800">ProjectTracker</h1>
+          <h1 className="text-lg font-bold text-gray-800">DevStar</h1>
           <nav className="flex gap-1 bg-gray-100 rounded-lg p-0.5">
             <button
               onClick={() => {

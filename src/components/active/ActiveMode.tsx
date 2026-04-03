@@ -68,6 +68,12 @@ export function ActiveMode() {
       <div className="w-full h-full flex items-center justify-center bg-transparent" style={{ overflow: 'hidden' }}>
         <div className="text-center">
           <p className="text-sm text-gray-400">{projectId ? 'No active sprint' : 'No project selected'}</p>
+          <button
+            onClick={() => apiToggleMode('management')}
+            className="mt-3 px-3 py-1.5 text-xs text-indigo-200 hover:text-white bg-indigo-600 rounded-md hover:bg-indigo-700 transition-colors"
+          >
+            Back to Management
+          </button>
         </div>
       </div>
     );

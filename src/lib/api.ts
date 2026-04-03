@@ -143,6 +143,10 @@ export async function apiCheckAndAdvanceSprint(projectId: number): Promise<Proje
   return invoke<ProjectSprint | null>('check_and_advance_sprint', { projectId });
 }
 
+export async function apiCompleteSprint(sprintId: number, projectId: number): Promise<ProjectSprint | null> {
+  return invoke<ProjectSprint | null>('complete_sprint', { sprintId, projectId });
+}
+
 export async function apiUpdateProjectItem(input: { id: number; checked?: boolean; notes?: string }): Promise<ProjectItem> {
   return invoke<ProjectItem>('update_project_item', { input });
 }
@@ -167,6 +171,14 @@ export async function apiDeleteProjectItem(id: number): Promise<void> {
 
 export async function apiDeleteProjectSection(id: number): Promise<void> {
   return invoke<void>('delete_project_section', { id });
+}
+
+export async function apiAddProjectSprint(projectId: number, name: string, description: string): Promise<ProjectSprint> {
+  return invoke<ProjectSprint>('add_project_sprint', { projectId, name, description });
+}
+
+export async function apiAddSharedSprintToProject(projectId: number, sharedSprintId: number, isLinked: boolean): Promise<ProjectSprint> {
+  return invoke<ProjectSprint>('add_shared_sprint_to_project', { projectId, sharedSprintId, isLinked });
 }
 
 export async function apiToggleMode(mode: 'management' | 'active'): Promise<void> {

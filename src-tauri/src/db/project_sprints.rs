@@ -110,6 +110,105 @@ pub fn delete_section(conn: &Connection, id: i64) -> Result<(), AppError> {
     Ok(())
 }
 
+pub fn add_sprint(
+    conn: &Connection,
+    project_id: i64,
+    name: &str,
+    description: &str,
+) -> Result<ProjectSprint, AppError> {
+    let max_order: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(sort_order), -1) FROM project_sprints WHERE project_id = ?1",
+        [project_id],
+        |row| row.get(0),
+    )?;
+    conn.execute(
+        "INSERT INTO project_sprints (project_id, name, description, status, sort_order, is_custom) VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+        (project_id, name, description, if max_order == -1 { "active" } else { "pending" }, max_order + 1),
+    )?;
+    let id = conn.last_insert_rowid();
+    get_sprint_internal(conn, id).ok_or_else(|| AppError::NotFound(format!("sprint {id}")))
+}
+
+pub fn add_shared_sprint_to_project(
+    conn: &Connection,
+    project_id: i64,
+    shared_sprint_id: i64,
+    is_linked: bool,
+) -> Result<ProjectSprint, AppError> {
+    // Get shared sprint info
+    let mut ss_stmt =
+        conn.prepare("SELECT id, name, description, sort_order FROM shared_sprints WHERE id = ?1")?;
+    let (ss_name, ss_desc, ss_sort): (String, String, i64) = ss_stmt
+        .query_row([shared_sprint_id], |row| {
+            Ok((row.get(1)?, row.get(2)?, row.get(3)?))
+        })?;
+
+    let max_order: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(sort_order), -1) FROM project_sprints WHERE project_id = ?1",
+        [project_id],
+        |row| row.get(0),
+    )?;
+
+    conn.execute(
+        "INSERT INTO project_sprints (project_id, name, description, status, sort_order, is_custom) VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+        (project_id, &ss_name, &ss_desc, if max_order == -1 { "active" } else { "pending" }, max_order + 1),
+    )?;
+    let project_sprint_id = conn.last_insert_rowid();
+
+    // Copy sections from shared sprint
+    let mut sections_stmt = conn.prepare(
+        "SELECT section_id, sort_order, is_linked FROM shared_sprint_sections WHERE sprint_id = ?1 ORDER BY sort_order",
+    )?;
+    let section_rows: Vec<(i64, i64, i64)> = sections_stmt
+        .query_map([shared_sprint_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    for (section_id, sort_order, src_linked) in section_rows {
+        let linked = if is_linked { src_linked != 0 } else { false };
+        let section = super::shared_sections::get_internal(conn, section_id)
+            .ok_or_else(|| AppError::NotFound(format!("shared section {section_id}")))?;
+
+        conn.execute(
+            "INSERT INTO project_sprint_sections (sprint_id, name, description, sort_order, is_custom, linked_from_section_id) VALUES (?1, ?2, ?3, ?4, 0, ?5)",
+            (project_sprint_id, &section.name, &section.description, sort_order, if linked { section_id } else { 0i64 }),
+        )?;
+        let project_section_id = conn.last_insert_rowid();
+
+        // Copy items from shared section
+        let items = super::shared_sections::get_items(conn, section_id)?;
+        for item in &items {
+            conn.execute(
+                "INSERT INTO project_items (section_id, title, description, checked, notes, sort_order, is_custom) VALUES (?1, ?2, ?3, 0, '', ?4, 0)",
+                (project_section_id, &item.title, &item.description, item.sort_order),
+            )?;
+        }
+    }
+
+    get_sprint_internal(conn, project_sprint_id)
+        .ok_or_else(|| AppError::NotFound(format!("sprint {project_sprint_id}")))
+}
+
+fn get_sprint_internal(conn: &Connection, id: i64) -> Option<ProjectSprint> {
+    let mut stmt = conn.prepare(
+        "SELECT id, project_id, name, description, status, sort_order, is_custom FROM project_sprints WHERE id = ?1",
+    ).ok()?;
+    stmt.query_row([id], |row| {
+        Ok(ProjectSprint {
+            id: row.get(0)?,
+            project_id: row.get(1)?,
+            name: row.get(2)?,
+            description: row.get(3)?,
+            status: row.get(4)?,
+            sort_order: row.get(5)?,
+            is_custom: row.get::<_, i64>(6)? != 0,
+        })
+    })
+    .ok()
+}
+
 pub fn toggle_item(conn: &Connection, id: i64) -> Result<ProjectItem, AppError> {
     let current: i64 = conn.query_row(
         "SELECT checked FROM project_items WHERE id = ?1",
@@ -159,6 +258,15 @@ pub fn delete_item(conn: &Connection, id: i64) -> Result<(), AppError> {
     if affected == 0 {
         return Err(AppError::NotFound(format!("item {id}")));
     }
+    Ok(())
+}
+
+pub fn complete_all_items(conn: &Connection, sprint_id: i64) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE project_items SET checked = 1 WHERE section_id IN \
+         (SELECT id FROM project_sprint_sections WHERE sprint_id = ?1) AND checked = 0",
+        [sprint_id],
+    )?;
     Ok(())
 }
 

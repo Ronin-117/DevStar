@@ -1,8 +1,19 @@
-# AGENTS.md - ProjectTracker
+# AGENTS.md - DevStar
 
 ## Project Overview
 
-Tauri v2 desktop app (React + TypeScript + Tailwind CSS v4) for managing projects and templates. Backend is Rust in `src-tauri/`. Frontend communicates with Rust via Tauri `invoke()` commands.
+DevStar — Tauri v2 desktop app (React + TypeScript + Tailwind CSS v4) for managing project development checklists using a sprint-based workflow. Users create templates composed of sprints, each containing sections of checklist items. Projects are instantiated from templates and tracked through sprints (pending → active → done). A "Live Mode" floating window shows the current sprint for focused task completion.
+
+## Data Model
+
+```
+Template → TemplateSprints → TemplateSprintSections (linked to SharedSections)
+SharedSection → SharedSectionItems (reusable checklist blocks)
+SharedSprint → SharedSprintSections (reusable sprint templates)
+Project → ProjectSprints → ProjectSprintSections → ProjectItems (checked/unchecked)
+```
+
+**Sprint lifecycle**: `pending` → `active` → `done`. Auto-advances when all items in the active sprint are checked.
 
 ## Commands
 
@@ -15,79 +26,91 @@ Tauri v2 desktop app (React + TypeScript + Tailwind CSS v4) for managing project
 | Preview | `npm run preview` |
 | Type check | `npx tsc --noEmit` |
 
-**No test framework is configured.** There are no test scripts in `package.json` and no test files exist. To add tests, install Vitest: `npm i -D vitest @testing-library/react @testing-library/jest-dom jsdom`, then add `"test": "vitest"` to scripts.
-
-**Running a single test (once Vitest is added):** `npx vitest run -t "test name"` or `npx vitest run src/path/to/file.test.tsx`
+**No test framework is configured.** To add: `npm i -D vitest @testing-library/react @testing-library/jest-dom jsdom`, then add `"test": "vitest"` to scripts.
 
 ## Code Style
 
 ### Imports
 
-- React hooks imported from `'react'` (e.g., `import { useEffect, useState } from 'react'`)
-- Tauri APIs from `'@tauri-apps/api/core'`
-- Use explicit named imports, no default imports except for React in `main.tsx`
-- Import order: external libs → internal modules (relative paths) → CSS
-- Type-only imports use `import type { ... }` syntax
+- React hooks from `'react'`
+- Tauri APIs from `'@tauri-apps/api/core'` and `'@tauri-apps/api/event'`
+- Named imports only (no defaults except React in `main.tsx`)
+- Order: external libs → internal modules → CSS
+- Type-only imports: `import type { ... }`
 
 ### TypeScript
 
-- **Strict mode enabled** (`"strict": true` in tsconfig)
-- `noUnusedLocals` and `noUnusedParameters` are enforced — do not leave unused variables
-- Use `unknown` for catch clause errors, cast to `Error` when accessing `.message`: `(e as Error).message`
-- All Tauri `invoke()` calls are generic: `invoke<Template[]>('cmd_name', { args })`
+- **Strict mode** with `noUnusedLocals` and `noUnusedParameters` enforced
+- Catch errors as `unknown`, cast with `(e as Error).message`
+- All `invoke()` calls are generic: `invoke<Template[]>('cmd_name', { args })`
 - API functions return typed Promises, never `any`
-- Interfaces for data types live in `src/lib/types.ts`
+- All types in `src/lib/types.ts`
 
 ### Naming Conventions
 
-- **Components**: PascalCase function components (`ProjectsView`, `TitleBar`, `ActiveMode`)
-- **API functions**: camelCase with `api` prefix (`apiListTemplates`, `apiCreateProject`)
-- **Store hooks**: camelCase (`useStore`)
-- **Type interfaces**: PascalCase (`Template`, `ProjectSectionWithItems`)
-- **Utility functions**: camelCase (`cn` for class merging)
-- **CSS classes**: Tailwind utility classes only, no custom CSS modules
+- **Components**: PascalCase (`ProjectsView`, `TemplateEditorView`)
+- **API functions**: camelCase with `api` prefix (`apiListProjectSprints`)
+- **Store**: camelCase (`useStore`, `fetchTemplates`)
+- **Types**: PascalCase (`ProjectSprintWithSections`)
+- **Tauri commands**: snake_case (`list_project_sprints`)
 
 ### Formatting
 
-- 2-space indentation
-- Single quotes for strings
-- Semicolons required
-- Trailing commas in multi-line objects/arrays
+- 2-space indent, single quotes, semicolons, trailing commas
 
 ### Error Handling
 
-- All async operations wrapped in `try/catch`
-- Errors stored in Zustand store as `error: string | null`
-- Use `set({ error: (e as Error).message })` pattern consistently
-- Optional `silent` parameter on fetch actions to suppress loading state: `fetchProjectDetail(id, true)`
-- API layer re-throws after logging; store layer catches and surfaces to UI
+- All async wrapped in `try/catch`
+- Errors stored in Zustand: `set({ error: (e as Error).message })`
+- `silent` param on fetch actions suppresses loading state
 
 ### State Management (Zustand)
 
 - Single store at `src/store/index.ts`
-- Selectors use inline arrow: `useStore((s) => s.view)`
-- Direct store access via `useStore.getState()` for cross-callers (e.g., clearing state on view switch)
-- Async actions call `get()` to access sibling actions (e.g., `await get().fetchProjects()`)
-- Loading state pattern: `set({ loading: true, error: null })` → operation → `set({ loading: false })`
+- Views: `'projects' | 'library' | 'template-editor'`
+- `libraryTab`: `'templates' | 'shared-sections' | 'shared-sprints'`
+- Detail caches use `Map<number, DetailType>` for keyed data
+- Event listener syncs `project-item-toggled` events between windows (in-place update, no refetch)
+- `useStore.getState()` for cross-callers; `get()` inside actions
 
 ### Styling
 
-- Tailwind CSS v4 via `@tailwindcss/vite` plugin
-- CSS variables defined in `src/index.css` for theming (HSL format)
-- Use `cn()` utility from `src/lib/utils.ts` for conditional class merging with `clsx` + `tailwind-merge`
-- Tauri drag regions: `{ appRegion: 'drag' } as React.CSSProperties`
+- Tailwind CSS v4 via `@tailwindcss/vite`
+- `cn()` from `src/lib/utils.ts` for conditional classes
+- Tauri drag regions: `style={{ ['appRegion' as string]: 'drag' }}`
 
 ### Component Structure
 
-- Feature folders under `src/components/{feature}/` (projects, templates, active, shared)
-- Shared UI components in `src/components/shared/`
-- Each view is a single exported function component
-- No prop drilling — use Zustand store directly in components
-- Inline event handlers are acceptable for simple callbacks
+```
+src/components/
+  active/        ActiveMode.tsx (Live Mode window)
+  projects/      ProjectsView.tsx, ProjectDetailView.tsx
+  templates/     TemplatesView.tsx, TemplateEditorView.tsx,
+                 SharedSectionsView.tsx, SharedSprintsView.tsx
+  shared/        Checkbox.tsx, CollapsibleSection.tsx,
+                 Modal.tsx, ProgressBar.tsx, TitleBar.tsx
+```
+
+### Cross-Window Sync
+
+- `apiToggleProjectItem()` emits `project-item-toggled` event via Tauri
+- Store listens and updates cached `projectSprints` Map in-place
+- No full refetch, no scroll jump, no flicker
 
 ### Tauri Backend
 
 - Rust source in `src-tauri/src/`
-- Tauri commands are invoked by name (snake_case): `invoke('list_templates')`
-- Input objects use snake_case keys to match Rust struct fields
-- Window management commands: `toggle_mode`, `resize_active_window`, `close_window`, etc.
+- DB: SQLite at `src-tauri/src/db/` with schema in `schema.sql`
+- Seed data in `seed.rs` (6 shared sections, 5 shared sprints, 3 templates)
+- Window management: `toggle_mode`, `set_active_window_compact`, `set_active_window_full`
+- Sprint auto-advance: `check_and_advance_sprint`, `complete_sprint` (marks all items done + advances)
+- Crate name: `projecttracker_lib` (internal identifier)
+
+### Key Features
+
+- **Templates**: Expandable hierarchy — template → sprints → sections. Add custom or shared sprints/sections (link or copy).
+- **Shared Sections**: Reusable checklist blocks with inline item CRUD.
+- **Shared Sprints**: Reusable sprint templates composed of shared sections.
+- **Projects**: Created from templates, track sprint progress with status badges.
+- **Live Mode**: Compact floating window showing active sprint with checkable items. Minimize to a round indigo button; restore to full panel. Auto-advances sprints on completion.
+- **Navigation**: Top tabs `Projects | Library`. Library sub-tabs: `Templates | Shared Sections | Shared Sprints` (always visible).

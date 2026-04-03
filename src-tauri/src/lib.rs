@@ -440,6 +440,21 @@ async fn check_and_advance_sprint(
 }
 
 #[tauri::command]
+async fn complete_sprint(
+    state: tauri::State<'_, AppState>,
+    window: tauri::Window,
+    sprint_id: i64,
+    project_id: i64,
+) -> Result<Option<ProjectSprint>, String> {
+    check_rate_limit(&state, window.label())?;
+    let conn = state.db.conn.lock().unwrap();
+    // Mark all items in this sprint as checked
+    db::project_sprints::complete_all_items(&conn, sprint_id).map_err(|e| e.to_string())?;
+    // Mark sprint as done and advance to next
+    db::project_sprints::check_and_advance_sprint(&conn, project_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn add_project_section(
     state: tauri::State<'_, AppState>,
     window: tauri::Window,
@@ -481,6 +496,33 @@ async fn delete_project_section(
     check_rate_limit(&state, window.label())?;
     let conn = state.db.conn.lock().unwrap();
     db::project_sprints::delete_section(&conn, id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn add_project_sprint(
+    state: tauri::State<'_, AppState>,
+    window: tauri::Window,
+    project_id: i64,
+    name: String,
+    description: String,
+) -> Result<ProjectSprint, String> {
+    check_rate_limit(&state, window.label())?;
+    let conn = state.db.conn.lock().unwrap();
+    db::project_sprints::add_sprint(&conn, project_id, &name, &description).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn add_shared_sprint_to_project(
+    state: tauri::State<'_, AppState>,
+    window: tauri::Window,
+    project_id: i64,
+    shared_sprint_id: i64,
+    is_linked: bool,
+) -> Result<ProjectSprint, String> {
+    check_rate_limit(&state, window.label())?;
+    let conn = state.db.conn.lock().unwrap();
+    db::project_sprints::add_shared_sprint_to_project(&conn, project_id, shared_sprint_id, is_linked)
+        .map_err(|e| e.to_string())
 }
 
 // --- Window management ---
@@ -649,7 +691,6 @@ async fn set_active_window_full(app: tauri::AppHandle) -> Result<(), String> {
         if let Some(m) = monitor {
             let size = m.size();
             let win_w = 340.0;
-            let win_h = 500.0;
             let btn_size = 48.0;
             let padding = 16.0;
             let btn_x = (size.width as f64 - btn_size - padding) as i32;
@@ -738,10 +779,13 @@ pub fn run() {
             update_project_item,
             toggle_project_item,
             check_and_advance_sprint,
+            complete_sprint,
             add_project_section,
             add_project_item,
             delete_project_item,
             delete_project_section,
+            add_project_sprint,
+            add_shared_sprint_to_project,
             toggle_mode,
             get_window_label,
             resize_active_window,
