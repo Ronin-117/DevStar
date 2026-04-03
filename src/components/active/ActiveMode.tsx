@@ -1,180 +1,162 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
-import { apiToggleMode, apiListProjectSectionsWithItems, apiUpdateProjectItem, apiListProjects, apiResizeActiveWindow } from '../../lib/api';
-import { Checkbox } from '../shared/Checkbox';
-
-interface FlatItem {
-  id: number;
-  title: string;
-  checked: boolean;
-  sectionName: string;
-}
-
-const ACTIVE_PROJECT_KEY = 'pt_active_project_id';
+import { useEffect, useState } from 'react';
+import {
+  apiToggleMode,
+  apiListProjectSprints,
+  apiToggleProjectItem,
+  apiAddProjectItem,
+  apiDeleteProjectItem,
+  apiDeleteProjectSection,
+  apiSetActiveWindowCompact,
+  apiSetActiveWindowFull,
+} from '../../lib/api';
+import { CollapsibleSection } from '../shared/CollapsibleSection';
+import type { ProjectSprintWithSections } from '../../lib/types';
 
 export function ActiveMode() {
-  const [projectId, setProjectId] = useState<number | null>(null);
-  const [projectName, setProjectName] = useState('');
-  const [items, setItems] = useState<FlatItem[]>([]);
+  const [sprints, setSprints] = useState<ProjectSprintWithSections[]>([]);
   const [loading, setLoading] = useState(true);
-  const [collapsed, setCollapsed] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const [projectId, setProjectId] = useState<number | null>(null);
+  const [minimized, setMinimized] = useState(false);
 
-  const loadProject = useCallback(async (isPoll = false) => {
-    const stored = localStorage.getItem(ACTIVE_PROJECT_KEY);
-    if (!stored) {
-      setProjectId(null);
-      if (!isPoll) setLoading(false);
-      return;
-    }
-    const id = Number(stored);
-    setProjectId(id);
-    // Only show loading on initial load, not during polling
-    if (!isPoll) setLoading(true);
-    try {
-      const [sections, projects] = await Promise.all([
-        apiListProjectSectionsWithItems(id),
-        apiListProjects(),
-      ]);
-      const project = projects.find((p) => p.id === id);
-      if (project) setProjectName(project.name);
-
-      const flat: FlatItem[] = [];
-      for (const section of sections) {
-        for (const item of section.items) {
-          if (!item.checked) {
-            flat.push({
-              id: item.id,
-              title: item.title,
-              checked: item.checked,
-              sectionName: section.section.name,
-            });
-          }
-        }
-      }
-      setItems(flat);
-    } catch {
-      // ignore
-    } finally {
-      if (!isPoll) setLoading(false);
+  useEffect(() => {
+    const stored = localStorage.getItem('pt_active_project_id');
+    if (stored) {
+      const id = Number(stored);
+      setProjectId(id);
+      apiListProjectSprints(id)
+        .then((data) => {
+          setSprints(data);
+          setLoading(false);
+        })
+        .catch(() => setLoading(false));
+    } else {
+      setLoading(false);
     }
   }, []);
 
-  useEffect(() => {
-    loadProject();
-    const interval = setInterval(() => loadProject(true), 2000);
-    return () => clearInterval(interval);
-  }, [loadProject]);
-
-  const handleToggle = async (itemId: number) => {
-    try {
-      await apiUpdateProjectItem({ id: itemId, checked: true });
-      setItems((prev) => prev.filter((i) => i.id !== itemId));
-    } catch {
-      loadProject(true);
+  const refresh = () => {
+    if (projectId) {
+      apiListProjectSprints(projectId)
+        .then((data) => setSprints(data))
+        .catch(() => {});
     }
   };
 
-  const handleBack = () => {
-    apiToggleMode('management');
+  const handleMinimize = () => {
+    setMinimized(true);
+    apiSetActiveWindowCompact().catch(() => {});
   };
 
-  const handleCollapse = async () => {
-    await apiResizeActiveWindow(48, 48);
-    setCollapsed(true);
+  const handleRestore = () => {
+    setMinimized(false);
+    apiSetActiveWindowFull().catch(() => {});
   };
 
-  const handleExpand = async () => {
-    setCollapsed(false);
-    await apiResizeActiveWindow(340, 500);
-  };
+  const activeSprint = sprints.find((s) => s.sprint.status === 'active');
 
-  // Collapsed state: small floating button
-  if (collapsed) {
+  if (loading) {
     return (
-      <>
-        <style>{`html, body { background: #4f46e5 !important; }`}</style>
-        <div
-          className="w-full h-full flex items-center justify-center"
-          data-tauri-drag-region
-          style={{ background: '#4f46e5', cursor: 'grab', overflow: 'hidden' }}
-        >
-          <button
-            onClick={handleExpand}
-            className="w-9 h-9 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white flex items-center justify-center shadow-lg transition-transform hover:scale-105"
-            title="ProjectTracker Live"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-            </svg>
-          </button>
-        </div>
-      </>
+      <div className="w-full h-full flex items-center justify-center bg-transparent" style={{ overflow: 'hidden' }}>
+        <p className="text-sm text-gray-400">Loading...</p>
+      </div>
     );
   }
 
-  // Expanded state: full checklist panel
-  return (
-    <div className="w-full h-full rounded-xl overflow-hidden shadow-xl border border-gray-200 bg-white flex flex-col">
-      <header
-        className="px-3 py-2 bg-indigo-50 flex items-center justify-between shrink-0"
-        style={{ appRegion: 'drag', cursor: 'grab' } as React.CSSProperties}
+  if (!projectId || !activeSprint) {
+    return (
+      <div className="w-full h-full flex items-center justify-center bg-transparent" style={{ overflow: 'hidden' }}>
+        <div className="text-center">
+          <p className="text-sm text-gray-400">{projectId ? 'No active sprint' : 'No project selected'}</p>
+        </div>
+      </div>
+    );
+  }
+
+  const totalItems = activeSprint.sections.reduce((sum, s) => sum + s.items.length, 0);
+  const checkedItems = activeSprint.sections.reduce(
+    (sum, s) => sum + s.items.filter((i) => i.checked).length,
+    0,
+  );
+
+  if (minimized) {
+    return (
+      <div
+        className="w-full h-full flex items-center justify-center"
+        style={{
+          background: '#4f46e5',
+          overflow: 'hidden',
+        }}
       >
-        <div className="flex items-center gap-2">
+        <button
+          onClick={handleRestore}
+          className="w-10 h-10 rounded-full bg-indigo-600 text-white shadow-lg hover:bg-indigo-500 transition-colors flex items-center justify-center"
+          style={{
+            ['appRegion' as string]: 'no-drag',
+          }}
+          title="Open Live Mode"
+        >
+          <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 11l3 3L22 4" />
+            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+          </svg>
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full h-full flex flex-col bg-gray-50">
+      <header
+        className="px-3 py-2 bg-indigo-600 flex items-center justify-between shrink-0"
+        style={{ ['appRegion' as string]: 'drag', cursor: 'grab' }}
+      >
+        <div>
+          <h2 className="text-sm font-bold text-white">
+            Sprint {activeSprint.sprint.sort_order + 1}: {activeSprint.sprint.name}
+          </h2>
+          <p className="text-xs text-indigo-200">{checkedItems}/{totalItems} complete</p>
+        </div>
+        <div className="flex items-center gap-1" style={{ ['appRegion' as string]: 'no-drag' }}>
           <button
-            onClick={handleCollapse}
-            className="text-gray-500 hover:text-gray-700 p-1 rounded hover:bg-indigo-100"
-            style={{ appRegion: 'no-drag' } as React.CSSProperties}
+            onClick={handleMinimize}
+            className="w-6 h-6 flex items-center justify-center rounded text-indigo-200 hover:text-white hover:bg-indigo-700"
             title="Minimize"
           >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M20 12H4" />
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 11l3 3L22 4" />
+              <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
             </svg>
           </button>
-          <div>
-            <h2 className="text-sm font-semibold leading-tight">{projectName || 'No project'}</h2>
-            <p className="text-xs text-gray-500">{items.length} remaining</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-1">
           <button
-            onClick={handleBack}
-            className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-indigo-100"
-            style={{ appRegion: 'no-drag' } as React.CSSProperties}
-            title="Back to Projects"
+            onClick={() => apiToggleMode('management')}
+            className="px-2 py-1 text-xs text-indigo-200 hover:text-white hover:bg-indigo-700 rounded"
           >
             Back
           </button>
         </div>
       </header>
 
-      <div ref={scrollRef} className="flex-1 overflow-auto">
-        {loading ? (
-          <div className="text-center py-8 text-xs text-gray-400">Loading...</div>
-        ) : !projectId ? (
-          <div className="text-center py-8">
-            <p className="text-sm text-gray-400 mb-2">No active project</p>
-            <p className="text-xs text-gray-300">Open a project in management mode first</p>
+      <div className="flex-1 overflow-auto p-2 space-y-2">
+        {activeSprint.sections.map((section) => (
+          <div key={section.section.id} className="border rounded-lg overflow-hidden bg-white">
+            <CollapsibleSection
+              section={section}
+              projectId={projectId}
+              onToggleItem={(itemId) => {
+                apiToggleProjectItem(itemId).then(() => refresh()).catch(() => {});
+              }}
+              onAddItem={(input) => {
+                apiAddProjectItem(input).then(() => refresh()).catch(() => {});
+              }}
+              onDeleteItem={(itemId) => {
+                apiDeleteProjectItem(itemId).then(() => refresh()).catch(() => {});
+              }}
+              onDeleteSection={(sectionId) => {
+                apiDeleteProjectSection(sectionId).then(() => refresh()).catch(() => {});
+              }}
+            />
           </div>
-        ) : items.length === 0 ? (
-          <div className="text-center py-8">
-            <p className="text-sm text-gray-400">All done!</p>
-          </div>
-        ) : (
-          <div className="divide-y divide-gray-50">
-            {items.map((item) => (
-              <div
-                key={item.id}
-                className="flex items-center gap-3 px-3 py-2.5 hover:bg-gray-50 transition-colors"
-              >
-                <Checkbox checked={false} onChange={() => handleToggle(item.id)} />
-                <div className="flex-1 min-w-0" style={{ appRegion: 'no-drag' } as React.CSSProperties}>
-                  <p className="text-sm truncate">{item.title}</p>
-                  <p className="text-xs text-gray-400">{item.sectionName}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+        ))}
       </div>
     </div>
   );

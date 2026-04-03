@@ -1,7 +1,9 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
-  Template, SectionWithItems, TemplateSection, TemplateItem,
-  Project, ProjectSectionWithItems, ProjectItem,
+  Template, TemplateSprint, TemplateSprintWithSections,
+  SharedSection, SharedSectionItem, SectionWithItems,
+  SharedSprint, SharedSprintWithSections,
+  Project, ProjectSprintWithSections, ProjectItem, ProjectSprintSection,
 } from './types';
 
 // --- Templates ---
@@ -22,36 +24,98 @@ export async function apiDeleteTemplate(id: number): Promise<void> {
   return invoke<void>('delete_template', { id });
 }
 
-// --- Template Sections ---
+// --- Template Sprints ---
 
-export async function apiListTemplateSectionsWithItems(templateId: number): Promise<SectionWithItems[]> {
-  return invoke<SectionWithItems[]>('list_template_sections_with_items', { templateId });
+export async function apiListTemplateSprints(templateId: number): Promise<TemplateSprint[]> {
+  return invoke<TemplateSprint[]>('list_template_sprints', { templateId });
 }
 
-export async function apiAddTemplateSection(input: { template_id: number; name: string; description?: string; linked_from_section_id?: number }): Promise<TemplateSection> {
-  return invoke<TemplateSection>('add_template_section', { input });
+export async function apiGetTemplateSprintWithSections(sprintId: number): Promise<TemplateSprintWithSections> {
+  return invoke<TemplateSprintWithSections>('get_template_sprint_with_sections', { sprintId });
 }
 
-export async function apiUpdateTemplateSection(id: number, name?: string, description?: string): Promise<TemplateSection> {
-  return invoke<TemplateSection>('update_template_section', { id, name, description });
+export async function apiAddTemplateSprint(templateId: number, name: string, description: string): Promise<TemplateSprint> {
+  return invoke<TemplateSprint>('add_template_sprint', { templateId, name, description });
 }
 
-export async function apiDeleteTemplateSection(id: number): Promise<void> {
-  return invoke<void>('delete_template_section', { id });
+export async function apiUpdateTemplateSprint(id: number, name?: string, description?: string): Promise<TemplateSprint> {
+  return invoke<TemplateSprint>('update_template_sprint', { id, name, description });
 }
 
-// --- Template Items ---
-
-export async function apiAddTemplateItem(input: { section_id: number; title: string; description?: string }): Promise<TemplateItem> {
-  return invoke<TemplateItem>('add_template_item', { input });
+export async function apiDeleteTemplateSprint(id: number): Promise<void> {
+  return invoke<void>('delete_template_sprint', { id });
 }
 
-export async function apiUpdateTemplateItem(id: number, title?: string, description?: string): Promise<TemplateItem> {
-  return invoke<TemplateItem>('update_template_item', { id, title, description });
+export async function apiAddTemplateSprintSection(sprintId: number, sectionId: number, isLinked: boolean): Promise<{ id: number }> {
+  return invoke<{ id: number }>('add_template_sprint_section', { sprintId, sectionId, isLinked });
 }
 
-export async function apiDeleteTemplateItem(id: number): Promise<void> {
-  return invoke<void>('delete_template_item', { id });
+export async function apiDeleteTemplateSprintSection(id: number): Promise<void> {
+  return invoke<void>('delete_template_sprint_section', { id });
+}
+
+// --- Shared Sections ---
+
+export async function apiListSharedSections(): Promise<SharedSection[]> {
+  return invoke<SharedSection[]>('list_shared_sections');
+}
+
+export async function apiGetSharedSectionWithItems(sectionId: number): Promise<SectionWithItems> {
+  return invoke<SectionWithItems>('get_shared_section_with_items', { sectionId });
+}
+
+export async function apiCreateSharedSection(input: { name: string; description?: string; color?: string }): Promise<SharedSection> {
+  return invoke<SharedSection>('create_shared_section', { input });
+}
+
+export async function apiUpdateSharedSection(id: number, name?: string, description?: string, color?: string): Promise<SharedSection> {
+  return invoke<SharedSection>('update_shared_section', { id, name, description, color });
+}
+
+export async function apiDeleteSharedSection(id: number): Promise<void> {
+  return invoke<void>('delete_shared_section', { id });
+}
+
+export async function apiAddSharedSectionItem(input: { section_id: number; title: string; description?: string }): Promise<SharedSectionItem> {
+  return invoke<SharedSectionItem>('add_shared_section_item', { input });
+}
+
+export async function apiUpdateSharedSectionItem(id: number, title?: string, description?: string): Promise<SharedSectionItem> {
+  return invoke<SharedSectionItem>('update_shared_section_item', { id, title, description });
+}
+
+export async function apiDeleteSharedSectionItem(id: number): Promise<void> {
+  return invoke<void>('delete_shared_section_item', { id });
+}
+
+// --- Shared Sprints ---
+
+export async function apiListSharedSprints(): Promise<SharedSprint[]> {
+  return invoke<SharedSprint[]>('list_shared_sprints');
+}
+
+export async function apiGetSharedSprintWithSections(sprintId: number): Promise<SharedSprintWithSections> {
+  return invoke<SharedSprintWithSections>('get_shared_sprint_with_sections', { sprintId });
+}
+
+export async function apiCreateSharedSprint(input: { name: string; description?: string }): Promise<SharedSprint> {
+  return invoke<SharedSprint>('create_shared_sprint', { input });
+}
+
+export async function apiUpdateSharedSprint(id: number, name?: string, description?: string): Promise<SharedSprint> {
+  return invoke<SharedSprint>('update_shared_sprint', { id, name, description });
+}
+
+export async function apiDeleteSharedSprint(id: number): Promise<void> {
+  return invoke<void>('delete_shared_sprint', { id });
+}
+
+export async function apiAddSharedSprintSection(input: { sprint_id: number; section_id: number; is_linked: boolean }): Promise<{ id: number }> {
+  return invoke<{ id: number }>('add_shared_sprint_section', { input });
+}
+
+export async function apiDeleteSharedSprintSection(id: number): Promise<void> {
+  return invoke<void>('delete_shared_sprint_section', { id });
 }
 
 // --- Projects ---
@@ -68,22 +132,39 @@ export async function apiDeleteProject(id: number): Promise<void> {
   return invoke<void>('delete_project', { id });
 }
 
+// --- Project Sprints ---
+
+export async function apiListProjectSprints(projectId: number): Promise<ProjectSprintWithSections[]> {
+  return invoke<ProjectSprintWithSections[]>('list_project_sprints', { projectId });
+}
+
+export async function apiSetSprintStatus(sprintId: number, status: string): Promise<void> {
+  return invoke<void>('set_sprint_status', { sprintId, status });
+}
+
+export async function apiGetActiveSprint(projectId: number): Promise<ProjectSprintWithSections | null> {
+  const sprint = await invoke<{ id: number } | null>('get_active_sprint', { projectId });
+  if (!sprint) return null;
+  const all = await invoke<ProjectSprintWithSections[]>('list_project_sprints', { projectId });
+  return all.find((s) => s.sprint.id === sprint.id) ?? null;
+}
+
 export async function apiGetProjectProgress(projectId: number): Promise<[number, number]> {
   return invoke<[number, number]>('get_project_progress', { projectId });
 }
 
 // --- Project Sections/Items ---
 
-export async function apiListProjectSectionsWithItems(projectId: number): Promise<ProjectSectionWithItems[]> {
-  return invoke<ProjectSectionWithItems[]>('list_project_sections_with_items', { projectId });
-}
-
 export async function apiUpdateProjectItem(input: { id: number; checked?: boolean; notes?: string }): Promise<ProjectItem> {
   return invoke<ProjectItem>('update_project_item', { input });
 }
 
-export async function apiAddProjectSection(input: { project_id: number; name: string; description?: string }): Promise<{ id: number }> {
-  return invoke<{ id: number }>('add_project_section', { input });
+export async function apiToggleProjectItem(id: number): Promise<ProjectItem> {
+  return invoke<ProjectItem>('toggle_project_item', { id });
+}
+
+export async function apiAddProjectSection(input: { sprint_id: number; name: string; description?: string; linked_from_section_id?: number }): Promise<ProjectSprintSection> {
+  return invoke<ProjectSprintSection>('add_project_section', { input });
 }
 
 export async function apiAddProjectItem(input: { section_id: number; title: string; description?: string }): Promise<ProjectItem> {
@@ -101,15 +182,8 @@ export async function apiDeleteProjectSection(id: number): Promise<void> {
 // --- Window ---
 
 export async function apiToggleMode(mode: 'management' | 'active'): Promise<void> {
-  console.log('[api] toggle_mode called:', mode);
-  try {
-    const rustMode = mode === 'management' ? 'Management' : 'Active';
-    await invoke<void>('toggle_mode', { mode: rustMode });
-    console.log('[api] toggle_mode succeeded');
-  } catch (e) {
-    console.error('[api] toggle_mode failed:', e);
-    throw e;
-  }
+  const rustMode = mode === 'management' ? 'Management' : 'Active';
+  await invoke<void>('toggle_mode', { mode: rustMode });
 }
 
 export async function apiResizeActiveWindow(width: number, height: number): Promise<void> {
@@ -122,6 +196,14 @@ export async function apiCloseWindow(): Promise<void> {
 
 export async function apiMinimizeWindow(): Promise<void> {
   return invoke<void>('minimize_window');
+}
+
+export async function apiSetActiveWindowCompact(): Promise<void> {
+  return invoke<void>('set_active_window_compact');
+}
+
+export async function apiSetActiveWindowFull(): Promise<void> {
+  return invoke<void>('set_active_window_full');
 }
 
 export async function apiToggleMaximizeWindow(): Promise<void> {

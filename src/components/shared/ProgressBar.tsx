@@ -1,3 +1,5 @@
+import { cn } from '../../lib/utils';
+
 interface ProgressBarProps {
   checked: number;
   total: number;
@@ -20,8 +22,4 @@ export function ProgressBar({ checked, total, size = 'md', color = 'bg-indigo-60
       <span className="text-xs text-gray-500 mt-0.5">{checked}/{total} ({pct}%)</span>
     </div>
   );
-}
-
-function cn(...classes: (string | undefined | false)[]) {
-  return classes.filter(Boolean).join(' ');
 }

@@ -1,40 +1,76 @@
 import { create } from 'zustand';
 import * as api from '../lib/api';
-import type { Template, SectionWithItems, Project, ProjectSectionWithItems } from '../lib/types';
+import type {
+  Template, Project, ProjectSprintWithSections,
+  SharedSection, SectionWithItems, SharedSprint, SharedSprintWithSections,
+  TemplateSprintWithSections,
+} from '../lib/types';
+
+export type LibraryTab = 'templates' | 'shared-sections' | 'shared-sprints';
 
 interface AppState {
   // Data
   templates: Template[];
-  templateSections: SectionWithItems[];
   projects: Project[];
-  projectSections: ProjectSectionWithItems[];
-  projectProgress: [number, number] | null;
+  sharedSections: SharedSection[];
+  sharedSprints: SharedSprint[];
+
+  // Detail caches
+  templateSprints: Map<number, TemplateSprintWithSections[]>;
+  projectSprints: Map<number, ProjectSprintWithSections[]>;
+  sharedSectionDetail: Map<number, SectionWithItems>;
+  sharedSprintDetail: Map<number, SharedSprintWithSections>;
   projectProgressMap: Map<number, [number, number]>;
-  templateCounts: Map<number, { sections: number; items: number }>;
 
   // UI
-  view: 'projects' | 'templates' | 'template-editor';
+  view: 'projects' | 'library' | 'template-editor';
+  libraryTab: LibraryTab;
   selectedProjectId: number | null;
   selectedTemplateId: number | null;
   editingProjectId: number | null;
   loading: boolean;
   error: string | null;
 
-  // Actions
+  // Actions - fetch
   fetchTemplates: () => Promise<void>;
-  fetchTemplateSections: (templateId: number) => Promise<void>;
   fetchProjects: () => Promise<void>;
   fetchProjectDetail: (projectId: number, silent?: boolean) => Promise<void>;
+  fetchSharedSections: () => Promise<void>;
+  fetchSharedSprints: () => Promise<void>;
+  fetchTemplateSprints: (templateId: number) => Promise<void>;
+
+  // Actions - shared sections
+  createSharedSection: (input: { name: string; description?: string; color?: string }) => Promise<void>;
+  deleteSharedSection: (id: number) => Promise<void>;
+  addSharedSectionItem: (sectionId: number, title: string) => Promise<void>;
+  deleteSharedSectionItem: (itemId: number, sectionId: number) => Promise<void>;
+
+  // Actions - shared sprints
+  createSharedSprint: (input: { name: string; description?: string }) => Promise<void>;
+  deleteSharedSprint: (id: number) => Promise<void>;
+  addSharedSprintSection: (sprintId: number, sectionId: number, isLinked: boolean) => Promise<void>;
+  deleteSharedSprintSection: (sprintId: number, sectionId: number) => Promise<void>;
+
+  // Actions - template sprints
+  addTemplateSprint: (templateId: number, name: string, description: string) => Promise<void>;
+  deleteTemplateSprint: (id: number, templateId: number) => Promise<void>;
+  addTemplateSprintSection: (sprintId: number, sectionId: number, isLinked: boolean, templateId: number) => Promise<void>;
+  deleteTemplateSprintSection: (id: number, templateId: number) => Promise<void>;
+
+  // Actions - projects
   createProject: (input: { name: string; description?: string; template_id: number; color?: string }) => Promise<void>;
   deleteProject: (id: number) => Promise<void>;
   deleteTemplate: (id: number) => Promise<void>;
-  toggleItem: (itemId: number, checked: boolean) => Promise<void>;
-  addProjectSection: (name: string) => Promise<void>;
-  addProjectItem: (sectionId: number, title: string) => Promise<void>;
-  deleteProjectItem: (id: number) => Promise<void>;
-  deleteProjectSection: (id: number) => Promise<void>;
+  setSprintStatus: (sprintId: number, status: string, projectId: number) => Promise<void>;
+  toggleItem: (itemId: number, projectId: number) => Promise<void>;
+  addProjectSection: (input: { sprint_id: number; name: string; description?: string; linked_from_section_id?: number }, projectId: number) => Promise<void>;
+  addProjectItem: (input: { section_id: number; title: string; description?: string }, projectId: number) => Promise<void>;
+  deleteProjectItem: (id: number, projectId: number) => Promise<void>;
+  deleteProjectSection: (id: number, projectId: number) => Promise<void>;
 
-  setView: (view: 'projects' | 'templates') => void;
+  // UI actions
+  setView: (view: AppState['view']) => void;
+  setLibraryTab: (tab: LibraryTab) => void;
   setSelectedProjectId: (id: number | null) => void;
   setSelectedTemplateId: (id: number | null) => void;
   setEditingProjectId: (id: number | null) => void;
@@ -43,13 +79,16 @@ interface AppState {
 
 export const useStore = create<AppState>((set, get) => ({
   templates: [],
-  templateSections: [],
   projects: [],
-  projectSections: [],
-  projectProgress: null,
+  sharedSections: [],
+  sharedSprints: [],
+  templateSprints: new Map(),
+  projectSprints: new Map(),
+  sharedSectionDetail: new Map(),
+  sharedSprintDetail: new Map(),
   projectProgressMap: new Map(),
-  templateCounts: new Map(),
   view: 'projects',
+  libraryTab: 'templates',
   selectedProjectId: null,
   selectedTemplateId: null,
   editingProjectId: null,
@@ -58,32 +97,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   fetchTemplates: async () => {
     try {
-      const templates = await api.apiListTemplates();
-      set({ templates });
-      // Fetch section/item counts for each template
-      const counts = new Map<number, { sections: number; items: number }>();
-      for (const t of templates) {
-        try {
-          const sections = await api.apiListTemplateSectionsWithItems(t.id);
-          let totalItems = 0;
-          for (const s of sections) {
-            totalItems += s.items.length;
-          }
-          counts.set(t.id, { sections: sections.length, items: totalItems });
-        } catch {
-          counts.set(t.id, { sections: 0, items: 0 });
-        }
-      }
-      set({ templateCounts: counts });
-    } catch (e: unknown) {
-      set({ error: (e as Error).message });
-    }
-  },
-
-  fetchTemplateSections: async (templateId) => {
-    try {
-      const sections = await api.apiListTemplateSectionsWithItems(templateId);
-      set({ templateSections: sections });
+      set({ templates: await api.apiListTemplates() });
     } catch (e: unknown) {
       set({ error: (e as Error).message });
     }
@@ -93,12 +107,10 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const projects = await api.apiListProjects();
       set({ projects });
-      // Fetch progress for each project
       const progressMap = new Map<number, [number, number]>();
       for (const p of projects) {
         try {
-          const progress = await api.apiGetProjectProgress(p.id);
-          progressMap.set(p.id, progress);
+          progressMap.set(p.id, await api.apiGetProjectProgress(p.id));
         } catch {
           progressMap.set(p.id, [0, 0]);
         }
@@ -112,13 +124,162 @@ export const useStore = create<AppState>((set, get) => ({
   fetchProjectDetail: async (projectId, silent = false) => {
     if (!silent) set({ loading: true, error: null });
     try {
-      const [sections, progress] = await Promise.all([
-        api.apiListProjectSectionsWithItems(projectId),
-        api.apiGetProjectProgress(projectId),
-      ]);
-      set({ projectSections: sections, projectProgress: progress, loading: false });
+      const sprints = await api.apiListProjectSprints(projectId);
+      set({
+        projectSprints: new Map(get().projectSprints).set(projectId, sprints),
+        loading: false,
+      });
     } catch (e: unknown) {
       set({ error: (e as Error).message, loading: false });
+    }
+  },
+
+  fetchSharedSections: async () => {
+    try {
+      set({ sharedSections: await api.apiListSharedSections() });
+    } catch (e: unknown) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  fetchSharedSprints: async () => {
+    try {
+      set({ sharedSprints: await api.apiListSharedSprints() });
+    } catch (e: unknown) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  fetchTemplateSprints: async (templateId) => {
+    try {
+      const sprints = await api.apiListTemplateSprints(templateId);
+      const details: TemplateSprintWithSections[] = [];
+      for (const s of sprints) {
+        try {
+          details.push(await api.apiGetTemplateSprintWithSections(s.id));
+        } catch { /* skip */ }
+      }
+      set({ templateSprints: new Map(get().templateSprints).set(templateId, details) });
+    } catch (e: unknown) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  createSharedSection: async (input) => {
+    try {
+      await api.apiCreateSharedSection(input);
+      await get().fetchSharedSections();
+    } catch (e: unknown) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  deleteSharedSection: async (id) => {
+    try {
+      await api.apiDeleteSharedSection(id);
+      await get().fetchSharedSections();
+    } catch (e: unknown) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  addSharedSectionItem: async (sectionId, title) => {
+    try {
+      await api.apiAddSharedSectionItem({ section_id: sectionId, title });
+      const detail = await api.apiGetSharedSectionWithItems(sectionId);
+      set({ sharedSectionDetail: new Map(get().sharedSectionDetail).set(sectionId, detail) });
+      await get().fetchSharedSections();
+    } catch (e: unknown) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  deleteSharedSectionItem: async (itemId, sectionId) => {
+    try {
+      await api.apiDeleteSharedSectionItem(itemId);
+      const detail = await api.apiGetSharedSectionWithItems(sectionId);
+      set({ sharedSectionDetail: new Map(get().sharedSectionDetail).set(sectionId, detail) });
+      await get().fetchSharedSections();
+    } catch (e: unknown) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  createSharedSprint: async (input) => {
+    try {
+      await api.apiCreateSharedSprint(input);
+      await get().fetchSharedSprints();
+    } catch (e: unknown) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  deleteSharedSprint: async (id) => {
+    try {
+      await api.apiDeleteSharedSprint(id);
+      await get().fetchSharedSprints();
+    } catch (e: unknown) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  addSharedSprintSection: async (sprintId, sectionId, isLinked) => {
+    try {
+      await api.apiAddSharedSprintSection({ sprint_id: sprintId, section_id: sectionId, is_linked: isLinked });
+      const detail = await api.apiGetSharedSprintWithSections(sprintId);
+      set({ sharedSprintDetail: new Map(get().sharedSprintDetail).set(sprintId, detail) });
+      await get().fetchSharedSprints();
+    } catch (e: unknown) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  deleteSharedSprintSection: async (sprintId, sectionId) => {
+    try {
+      const detail = await api.apiGetSharedSprintWithSections(sprintId);
+      const section = detail.sections.find((s) => s.section_id === sectionId);
+      if (section) await api.apiDeleteSharedSprintSection(section.id);
+      const refreshed = await api.apiGetSharedSprintWithSections(sprintId);
+      set({ sharedSprintDetail: new Map(get().sharedSprintDetail).set(sprintId, refreshed) });
+      await get().fetchSharedSprints();
+    } catch (e: unknown) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  addTemplateSprint: async (templateId, name, description) => {
+    try {
+      await api.apiAddTemplateSprint(templateId, name, description);
+      await get().fetchTemplateSprints(templateId);
+    } catch (e: unknown) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  deleteTemplateSprint: async (id, templateId) => {
+    try {
+      await api.apiDeleteTemplateSprint(id);
+      await get().fetchTemplateSprints(templateId);
+    } catch (e: unknown) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  addTemplateSprintSection: async (sprintId, sectionId, isLinked, templateId) => {
+    try {
+      await api.apiAddTemplateSprintSection(sprintId, sectionId, isLinked);
+      await get().fetchTemplateSprints(templateId);
+    } catch (e: unknown) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  deleteTemplateSprintSection: async (id, templateId) => {
+    try {
+      await api.apiDeleteTemplateSprintSection(id);
+      await get().fetchTemplateSprints(templateId);
+    } catch (e: unknown) {
+      set({ error: (e as Error).message });
     }
   },
 
@@ -153,66 +314,62 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  toggleItem: async (itemId, checked) => {
+  setSprintStatus: async (sprintId, status, projectId) => {
     try {
-      await api.apiUpdateProjectItem({ id: itemId, checked });
-      const { selectedProjectId } = get();
-      if (selectedProjectId) {
-        await get().fetchProjectDetail(selectedProjectId, true);
-      }
+      await api.apiSetSprintStatus(sprintId, status);
+      await get().fetchProjectDetail(projectId, true);
     } catch (e: unknown) {
       set({ error: (e as Error).message });
     }
   },
 
-  addProjectSection: async (name) => {
-    const { selectedProjectId } = get();
-    if (!selectedProjectId) return;
+  toggleItem: async (itemId, projectId) => {
     try {
-      await api.apiAddProjectSection({ project_id: selectedProjectId, name });
-      await get().fetchProjectDetail(selectedProjectId, true);
+      await api.apiToggleProjectItem(itemId);
+      await get().fetchProjectDetail(projectId, true);
     } catch (e: unknown) {
       set({ error: (e as Error).message });
     }
   },
 
-  addProjectItem: async (sectionId, title) => {
+  addProjectSection: async (input, projectId) => {
     try {
-      await api.apiAddProjectItem({ section_id: sectionId, title });
-      const { selectedProjectId } = get();
-      if (selectedProjectId) {
-        await get().fetchProjectDetail(selectedProjectId, true);
-      }
+      await api.apiAddProjectSection(input);
+      await get().fetchProjectDetail(projectId, true);
     } catch (e: unknown) {
       set({ error: (e as Error).message });
     }
   },
 
-  deleteProjectItem: async (id) => {
+  addProjectItem: async (input, projectId) => {
+    try {
+      await api.apiAddProjectItem(input);
+      await get().fetchProjectDetail(projectId, true);
+    } catch (e: unknown) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  deleteProjectItem: async (id, projectId) => {
     try {
       await api.apiDeleteProjectItem(id);
-      const { selectedProjectId } = get();
-      if (selectedProjectId) {
-        await get().fetchProjectDetail(selectedProjectId, true);
-      }
+      await get().fetchProjectDetail(projectId, true);
     } catch (e: unknown) {
       set({ error: (e as Error).message });
     }
   },
 
-  deleteProjectSection: async (id) => {
+  deleteProjectSection: async (id, projectId) => {
     try {
       await api.apiDeleteProjectSection(id);
-      const { selectedProjectId } = get();
-      if (selectedProjectId) {
-        await get().fetchProjectDetail(selectedProjectId, true);
-      }
+      await get().fetchProjectDetail(projectId, true);
     } catch (e: unknown) {
       set({ error: (e as Error).message });
     }
   },
 
   setView: (view) => set({ view }),
+  setLibraryTab: (libraryTab) => set({ libraryTab }),
   setSelectedProjectId: (id) => {
     set({ selectedProjectId: id });
     if (id) localStorage.setItem('pt_active_project_id', String(id));

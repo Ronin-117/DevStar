@@ -1,28 +1,35 @@
 import { useState } from 'react';
 import { cn } from '../../lib/utils';
 import { Checkbox } from '../shared/Checkbox';
-import type { ProjectSectionWithItems } from '../../lib/types';
-import { useStore } from '../../store';
+import type { ProjectSprintSectionWithItems } from '../../lib/types';
 
 interface CollapsibleSectionProps {
-  section: ProjectSectionWithItems;
+  section: ProjectSprintSectionWithItems;
+  projectId: number;
+  onToggleItem?: (itemId: number, projectId: number) => void;
+  onAddItem?: (input: { section_id: number; title: string; description?: string }, projectId: number) => void;
+  onDeleteItem?: (itemId: number, projectId: number) => void;
+  onDeleteSection?: (sectionId: number, projectId: number) => void;
 }
 
-export function CollapsibleSection({ section }: CollapsibleSectionProps) {
+export function CollapsibleSection({
+  section,
+  projectId,
+  onToggleItem,
+  onAddItem,
+  onDeleteItem,
+  onDeleteSection,
+}: CollapsibleSectionProps) {
   const [open, setOpen] = useState(true);
   const [addingItem, setAddingItem] = useState(false);
   const [newItemTitle, setNewItemTitle] = useState('');
-  const toggleItem = useStore((s) => s.toggleItem);
-  const addProjectItem = useStore((s) => s.addProjectItem);
-  const deleteProjectItem = useStore((s) => s.deleteProjectItem);
-  const deleteProjectSection = useStore((s) => s.deleteProjectSection);
 
   const checkedCount = section.items.filter((i) => i.checked).length;
   const totalCount = section.items.length;
 
   const handleAddItem = () => {
     if (!newItemTitle.trim()) return;
-    addProjectItem(section.section.id, newItemTitle.trim());
+    onAddItem?.({ section_id: section.section.id, title: newItemTitle.trim() }, projectId);
     setNewItemTitle('');
     setAddingItem(false);
   };
@@ -53,15 +60,15 @@ export function CollapsibleSection({ section }: CollapsibleSectionProps) {
           <span className="text-xs text-gray-500">
             {checkedCount}/{totalCount}
           </span>
-          {section.section.is_custom && (
+          {section.section.is_custom && onDeleteSection && (
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                deleteProjectSection(section.section.id);
+                onDeleteSection(section.section.id, projectId);
               }}
               className="text-gray-400 hover:text-red-500 text-xs"
             >
-              ×
+              &times;
             </button>
           )}
         </div>
@@ -86,7 +93,7 @@ export function CollapsibleSection({ section }: CollapsibleSectionProps) {
               >
                 <Checkbox
                   checked={item.checked}
-                  onChange={() => toggleItem(item.id, !item.checked)}
+                  onChange={() => onToggleItem?.(item.id, projectId)}
                 />
                 <div className="flex-1 min-w-0">
                   <span
@@ -101,12 +108,12 @@ export function CollapsibleSection({ section }: CollapsibleSectionProps) {
                     <p className="text-xs text-gray-500 mt-0.5">{item.description}</p>
                   )}
                 </div>
-                {item.is_custom && (
+                {item.is_custom && onDeleteItem && (
                   <button
-                    onClick={() => deleteProjectItem(item.id)}
+                    onClick={() => onDeleteItem(item.id, projectId)}
                     className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 text-xs shrink-0"
                   >
-                    ×
+                    &times;
                   </button>
                 )}
               </div>
