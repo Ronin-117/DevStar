@@ -4,11 +4,15 @@ pub mod rate_limit;
 use db::Database;
 use db::types::*;
 use rate_limit::RateLimiter;
+use std::sync::Mutex;
 use tauri::Manager;
+use tauri::tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 
 struct AppState {
     db: Database,
     rate_limiter: RateLimiter,
+    mcp_process: Mutex<Option<std::process::Child>>,
 }
 
 fn check_rate_limit(state: &tauri::State<AppState>, window_label: &str) -> Result<(), String> {
@@ -743,9 +747,69 @@ pub fn run() {
     }
     let rate_limiter = RateLimiter::new(30.0, 5.0);
 
+    // Add to Windows startup on first run
+    setup_startup_auto();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(AppState { db, rate_limiter })
+        .plugin(tauri_plugin_shell::init())
+        .manage(AppState { db, rate_limiter, mcp_process: Mutex::new(None) })
+        .setup(|app| {
+            // Spawn MCP server as background process
+            spawn_mcp_server(app.handle())?;
+
+            // Create system tray with menu
+            let handle = app.handle();
+            let open_item = MenuItem::with_id(handle, "open", "Open DevStar", true, None::<&str>)?;
+            let live_item = MenuItem::with_id(handle, "live", "Live Mode", true, None::<&str>)?;
+            let sep = PredefinedMenuItem::separator(handle)?;
+            let quit_item = MenuItem::with_id(handle, "quit", "Stop DevStar", true, None::<&str>)?;
+            let menu = Menu::with_items(handle, &[&open_item, &live_item, &sep, &quit_item])?;
+
+            let _tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .tooltip("DevStar")
+                .menu(&menu)
+                .show_menu_on_left_click(true)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "open" => {
+                        if let Some(w) = app.get_webview_window("management") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                    "live" => {
+                        let _ = toggle_mode(app.clone(), WindowMode::Active);
+                    }
+                    "quit" => {
+                        // Kill MCP server
+                        let state = app.state::<AppState>();
+                        let mut proc_lock = state.mcp_process.lock().unwrap();
+                        if let Some(mut child) = proc_lock.take() {
+                            let _ = child.kill();
+                            eprintln!("[MCP] Server stopped");
+                        }
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event {
+                        let app = tray.app_handle();
+                        if let Some(w) = app.get_webview_window("management") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             list_templates,
             create_template,
@@ -799,6 +863,123 @@ pub fn run() {
             set_active_window_compact,
             set_active_window_full,
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "management" {
+                    // Don't quit, just hide the window
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                // Active window can close normally
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Spawn the MCP server as a background child process
+fn spawn_mcp_server(app: &tauri::AppHandle) -> Result<(), String> {
+    let exe_path = std::env::current_exe()
+        .map_err(|e| format!("Failed to get exe path: {}", e))?;
+    let exe_dir = exe_path.parent()
+        .ok_or("Failed to get exe directory")?;
+    let mcp_path = exe_dir.join("devstar-mcp.exe");
+
+    if !mcp_path.exists() {
+        eprintln!("[MCP] devstar-mcp.exe not found at {:?}", mcp_path);
+        return Ok(());
+    }
+
+    // On Windows, use CREATE_NO_WINDOW flag to hide the console
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let mcp = std::process::Command::new(&mcp_path)
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+
+        match mcp {
+            Ok(child) => {
+                eprintln!("[MCP] Server spawned with PID: {}", child.id());
+                let state = app.state::<AppState>();
+                let mut proc_lock = state.mcp_process.lock().unwrap();
+                *proc_lock = Some(child);
+            }
+            Err(e) => {
+                eprintln!("[MCP] Failed to spawn: {}", e);
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mcp = std::process::Command::new(&mcp_path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+
+        match mcp {
+            Ok(child) => {
+                eprintln!("[MCP] Server spawned with PID: {}", child.id());
+                let state = app.state::<AppState>();
+                let mut proc_lock = state.mcp_process.lock().unwrap();
+                *proc_lock = Some(child);
+            }
+            Err(e) => {
+                eprintln!("[MCP] Failed to spawn: {}", e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Add DevStar to Windows startup
+#[cfg(target_os = "windows")]
+fn setup_startup_auto() {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_CURRENT_USER;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let run_key = hkcu.open_subkey_with_flags(
+        r"Software\Microsoft\Windows\CurrentVersion\Run",
+        winreg::enums::KEY_WRITE
+    );
+
+    if let Ok(run) = run_key {
+        // Check if already set
+        let existing: Result<String, _> = run.get_value("DevStar");
+        if existing.is_err() {
+            // Get current exe path
+            if let Ok(exe_path) = std::env::current_exe() {
+                let path_str = exe_path.to_string_lossy().to_string();
+                let _ = run.set_value("DevStar", &path_str);
+                eprintln!("[Startup] Added DevStar to startup: {}", path_str);
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn setup_startup_auto() {
+    // Linux: create XDG autostart .desktop file
+    if let Some(config_dir) = dirs::config_dir() {
+        let autostart_dir = config_dir.join("autostart");
+        let _ = std::fs::create_dir_all(&autostart_dir);
+        let desktop_file = autostart_dir.join("devstar.desktop");
+        if !desktop_file.exists() {
+            if let Ok(exe_path) = std::env::current_exe() {
+                let content = format!(
+                    "[Desktop Entry]\nType=Application\nName=DevStar\nExec={}\nHidden=false\nNoDisplay=false\nX-GNOME-Autostart-enabled=true\n",
+                    exe_path.to_string_lossy()
+                );
+                let _ = std::fs::write(&desktop_file, content);
+                eprintln!("[Startup] Created autostart entry: {:?}", desktop_file);
+            }
+        }
+    }
 }
