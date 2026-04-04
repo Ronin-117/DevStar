@@ -60,6 +60,15 @@ body {
 html.active-window {
   overflow: hidden !important;
   scrollbar-width: none !important;
+  background: #ffffff !important;
+}
+
+html.active-window body {
+  background: #ffffff !important;
+}
+
+html.active-window #root {
+  background: #ffffff !important;
 }
 
 html.active-window ::-webkit-scrollbar {

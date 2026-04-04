@@ -727,31 +727,19 @@ async fn toggle_maximize_window(window: tauri::Window) -> Result<(), String> {
 pub fn run() {
     let app_data_dir = dirs::data_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("com.njne2.projecttracker");
+        .join("com.njne2.devstar");
     std::fs::create_dir_all(&app_data_dir).expect("Failed to create app data directory");
-    let db_path = app_data_dir.join("projecttracker.db");
+    let db_path = app_data_dir.join("devstar.db");
     let db_path_str = db_path.to_string_lossy().to_string();
 
     let db = Database::new(&db_path_str).expect("Failed to initialize database");
     {
         let conn = db.conn.lock().unwrap();
-        // Wipe and re-seed with new comprehensive data
-        conn.execute_batch(
-            "PRAGMA foreign_keys = OFF;
-             DELETE FROM project_items;
-             DELETE FROM project_sprint_sections;
-             DELETE FROM project_sprints;
-             DELETE FROM projects;
-             DELETE FROM template_sprint_sections;
-             DELETE FROM template_sprints;
-             DELETE FROM templates;
-             DELETE FROM shared_sprint_sections;
-             DELETE FROM shared_sprints;
-             DELETE FROM shared_section_items;
-             DELETE FROM shared_sections;
-             PRAGMA foreign_keys = ON;"
-        ).expect("Failed to wipe database");
-        db::seeds::seed_all(&conn).expect("Failed to seed database");
+        // Only seed if DB is empty (first run)
+        let template_count: i64 = conn.query_row("SELECT count(*) FROM templates", [], |r| r.get(0)).unwrap_or(0);
+        if template_count == 0 {
+            db::seeds::seed_all(&conn).expect("Failed to seed database");
+        }
     }
     let rate_limiter = RateLimiter::new(30.0, 5.0);
 

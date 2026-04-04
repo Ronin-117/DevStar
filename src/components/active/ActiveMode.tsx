@@ -12,6 +12,7 @@ import {
 } from '../../lib/api';
 import { CollapsibleSection } from '../shared/CollapsibleSection';
 import type { ProjectSprintWithSections } from '../../lib/types';
+import appIcon from '../../assets/app-icon.png';
 
 export function ActiveMode() {
   const [sprints, setSprints] = useState<ProjectSprintWithSections[]>([]);
@@ -33,31 +34,47 @@ export function ActiveMode() {
     } else {
       setLoading(false);
     }
-  }, []);
+
+    // Poll every 2 seconds to stay in sync with management window
+    const interval = setInterval(() => {
+      const currentId = localStorage.getItem('pt_active_project_id');
+      if (currentId) {
+        const id = Number(currentId);
+        if (id !== projectId) {
+          setProjectId(id);
+        }
+        apiListProjectSprints(id)
+          .then((data) => setSprints(data))
+          .catch(() => { });
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [projectId]);
 
   const refresh = () => {
     if (projectId) {
       apiListProjectSprints(projectId)
         .then((data) => setSprints(data))
-        .catch(() => {});
+        .catch(() => { });
     }
   };
 
   const handleMinimize = () => {
     setMinimized(true);
-    apiSetActiveWindowCompact().catch(() => {});
+    apiSetActiveWindowCompact().catch(() => { });
   };
 
   const handleRestore = () => {
     setMinimized(false);
-    apiSetActiveWindowFull().catch(() => {});
+    apiSetActiveWindowFull().catch(() => { });
   };
 
   const activeSprint = sprints.find((s) => s.sprint.status === 'active');
 
   if (loading) {
     return (
-      <div className="w-full h-full flex items-center justify-center bg-transparent" style={{ overflow: 'hidden' }}>
+      <div className="w-full h-full flex items-center justify-center bg-white" style={{ overflow: 'hidden' }}>
         <p className="text-sm text-gray-400">Loading...</p>
       </div>
     );
@@ -65,7 +82,7 @@ export function ActiveMode() {
 
   if (!projectId || !activeSprint) {
     return (
-      <div className="w-full h-full flex items-center justify-center bg-transparent" style={{ overflow: 'hidden' }}>
+      <div className="w-full h-full flex items-center justify-center bg-white" style={{ overflow: 'hidden' }}>
         <div className="text-center">
           <p className="text-sm text-gray-400">{projectId ? 'No active sprint' : 'No project selected'}</p>
           <button
@@ -90,22 +107,19 @@ export function ActiveMode() {
       <div
         className="w-full h-full flex items-center justify-center"
         style={{
-          background: '#4f46e5',
+          background: 'transparent',
           overflow: 'hidden',
         }}
       >
         <button
           onClick={handleRestore}
-          className="w-10 h-10 rounded-full bg-indigo-600 text-white shadow-lg hover:bg-indigo-500 transition-colors flex items-center justify-center"
+          className="w-10 h-10 rounded-full bg-white/90 backdrop-blur-sm shadow-xl hover:bg-white transition-colors flex items-center justify-center overflow-hidden"
           style={{
             ['appRegion' as string]: 'no-drag',
           }}
           title="Open Live Mode"
         >
-          <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-            <path d="M9 11l3 3L22 4" />
-            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
-          </svg>
+          <img src={appIcon} alt="" className="w-6 h-6" />
         </button>
       </div>
     );
@@ -126,13 +140,10 @@ export function ActiveMode() {
         <div className="flex items-center gap-1" style={{ ['appRegion' as string]: 'no-drag' }}>
           <button
             onClick={handleMinimize}
-            className="w-6 h-6 flex items-center justify-center rounded text-indigo-200 hover:text-white hover:bg-indigo-700"
+            className="w-6 h-6 flex items-center justify-center rounded bg-white/20 hover:bg-white/30 overflow-hidden"
             title="Minimize"
           >
-            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-              <path d="M9 11l3 3L22 4" />
-              <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
-            </svg>
+            <img src={appIcon} alt="" className="w-4 h-4" />
           </button>
           <button
             onClick={() => apiToggleMode('management')}
@@ -153,16 +164,16 @@ export function ActiveMode() {
                 apiToggleProjectItem(itemId)
                   .then(() => apiCheckAndAdvanceSprint(projectId))
                   .then(() => refresh())
-                  .catch(() => {});
+                  .catch(() => { });
               }}
               onAddItem={(input) => {
-                apiAddProjectItem(input).then(() => refresh()).catch(() => {});
+                apiAddProjectItem(input).then(() => refresh()).catch(() => { });
               }}
               onDeleteItem={(itemId) => {
-                apiDeleteProjectItem(itemId).then(() => refresh()).catch(() => {});
+                apiDeleteProjectItem(itemId).then(() => refresh()).catch(() => { });
               }}
               onDeleteSection={(sectionId) => {
-                apiDeleteProjectSection(sectionId).then(() => refresh()).catch(() => {});
+                apiDeleteProjectSection(sectionId).then(() => refresh()).catch(() => { });
               }}
             />
           </div>

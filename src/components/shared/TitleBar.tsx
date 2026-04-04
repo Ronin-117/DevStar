@@ -1,4 +1,5 @@
 import { apiCloseWindow, apiMinimizeWindow, apiToggleMaximizeWindow } from '../../lib/api';
+import appIcon from '../../assets/app-icon.png';
 
 const drag = { appRegion: 'drag' } as React.CSSProperties;
 const noDrag = { appRegion: 'no-drag' } as React.CSSProperties;
@@ -10,7 +11,7 @@ export function TitleBar() {
       style={drag}
     >
       <div className="flex items-center gap-2 px-3">
-        <div className="w-3 h-3 rounded-full bg-indigo-600" />
+        <img src={appIcon} alt="" className="w-4 h-4" />
         <span className="text-xs font-medium text-gray-600">DevStar</span>
       </div>
       <div className="flex items-center h-full">

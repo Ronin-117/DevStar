@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "devstar": {
+      "command": "devstar-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}
