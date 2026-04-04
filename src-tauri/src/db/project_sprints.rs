@@ -138,7 +138,7 @@ pub fn add_shared_sprint_to_project(
     // Get shared sprint info
     let mut ss_stmt =
         conn.prepare("SELECT id, name, description, sort_order FROM shared_sprints WHERE id = ?1")?;
-    let (ss_name, ss_desc, ss_sort): (String, String, i64) = ss_stmt
+    let (ss_name, ss_desc, _ss_sort): (String, String, i64) = ss_stmt
         .query_row([shared_sprint_id], |row| {
             Ok((row.get(1)?, row.get(2)?, row.get(3)?))
         })?;
@@ -217,7 +217,7 @@ pub fn toggle_item(conn: &Connection, id: i64) -> Result<ProjectItem, AppError> 
     )?;
     conn.execute(
         "UPDATE project_items SET checked = ?1 WHERE id = ?2",
-        ((1 - current) as i64, id),
+        ((1 - current), id),
     )?;
     get_item_internal(conn, id).ok_or_else(|| AppError::NotFound(format!("item {id}")))
 }

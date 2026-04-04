@@ -4,6 +4,11 @@
 //! Connects via JSON-RPC over stdio following the MCP protocol.
 //! Shares the same SQLite database as the main Tauri app.
 
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::map_entry)]
+
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

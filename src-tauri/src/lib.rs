@@ -1,3 +1,8 @@
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(clippy::let_underscore_future)]
+#![allow(clippy::unnecessary_cast)]
+
 pub mod db;
 pub mod rate_limit;
 
@@ -779,7 +784,10 @@ pub fn run() {
                         }
                     }
                     "live" => {
-                        let _ = toggle_mode(app.clone(), WindowMode::Active);
+                        let app_clone = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = toggle_mode(app_clone, WindowMode::Active).await;
+                        });
                     }
                     "quit" => {
                         // Kill MCP server
