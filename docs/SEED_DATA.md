@@ -89,3 +89,10 @@ To add new templates or sections, modify the files in `src-tauri/src/db/seeds/`:
 3. Add a new template file in `seeds/templates/`
 4. Register it in `seeds/templates/mod.rs`
 5. Call it from `seeds/mod.rs::seed_all()`
+
+## First-Run Seeding
+
+The database is only seeded on the first app launch (when `templates` table is empty). On subsequent launches, user data is preserved. To force a re-seed, delete the database file:
+
+- **Windows**: `%APPDATA%\com.njne2.devstar\devstar.db`
+- **Linux**: `~/.local/share/com.njne2.devstar/devstar.db`

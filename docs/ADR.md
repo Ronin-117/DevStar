@@ -108,42 +108,121 @@ Implement `is_linked` flag on sprint sections. Linked sections reference the sha
 
 ---
 
-## ADR-006: Database Wipe and Re-seed on Every Run
+## ADR-006: Seed Database Only on First Run
 
-**Date**: 2025-04-01
-**Status**: Accepted (Temporary)
+**Date**: 2025-04-04
+**Status**: Accepted
+**Supersedes**: ADR-006 (original)
 
 ### Context
 
-During active development, the seed data changes frequently. A migration system would add complexity.
+The original approach wiped and re-seeded the database on every app start. This meant all user projects were lost on every restart, making the app unusable for real work.
 
 ### Decision
 
-Wipe all tables and re-seed on every app start. This ensures the latest seed data is always present.
+Check if the `templates` table is empty on startup. Only seed if empty (first run). This preserves user data across restarts while still populating the database on first launch.
 
 ### Consequences
 
-- **Positive**: Always up-to-date seed data, simple implementation
-- **Negative**: All user data is lost on restart (acceptable during development)
-- **Future**: Should implement proper migration system before production release
+- **Positive**: User data persists across restarts
+- **Positive**: Seed data still present on first run
+- **Negative**: Seed data changes won't apply to existing databases (requires manual migration or DB deletion)
 
 ---
 
-## ADR-007: Compact Minimized Live Mode
+## ADR-007: Background-First App with System Tray
 
-**Date**: 2025-04-01
+**Date**: 2025-04-04
 **Status**: Accepted
 
 ### Context
 
-Users need a way to keep the Live Mode accessible without taking up screen space.
+DevStar needs to run as a background service (MCP server for AI agents) while optionally showing a UI. The app should start minimized to the system tray on login.
 
 ### Decision
 
-Minimize to a 48×48px round indigo button positioned at the top-right corner of the screen with transparent background. Clicking restores to full panel (340×500px) positioned to the left of the button.
+- Management window starts with `visible: false`
+- System tray icon created on startup with menu (Open, Live Mode, Stop)
+- MCP server spawned as a hidden child process
+- Window close hides the window instead of quitting
+- "Stop DevStar" from tray kills MCP server and exits
+- App adds itself to system startup on first run
 
 ### Consequences
 
-- **Positive**: Always accessible, minimal screen footprint
-- **Positive**: Clean visual design matching the app theme
-- **Negative**: Requires window repositioning logic for restore
+- **Positive**: Always available for MCP agents, no need to manually launch
+- **Positive**: Clean user experience — UI on demand, background always running
+- **Negative**: More complex lifecycle management
+- **Negative**: Requires platform-specific code for startup registration
+
+---
+
+## ADR-008: MCP Server for AI Agent Integration
+
+**Date**: 2025-04-04
+**Status**: Accepted
+
+### Context
+
+AI coding agents (Claude Code, OpenCode, Antigravity) need programmatic access to project plans so they can read sprint status, update items, and log errors without manual UI interaction.
+
+### Decision
+
+Build a separate binary (`devstar-mcp`) that implements the Model Context Protocol over stdio:
+- Spawns as a background child process on app startup
+- Shares the same SQLite database
+- Exposes 14 tools for reading and modifying project data
+- Hidden console window on Windows (`CREATE_NO_WINDOW`)
+- Killed gracefully on app exit
+
+### Consequences
+
+- **Positive**: AI agents can autonomously track and update project progress
+- **Positive**: Standard protocol (MCP) — works with any MCP-compatible agent
+- **Negative**: Additional binary to maintain
+- **Negative**: No authentication — any process that can connect to stdin/stdout can use it (acceptable for local-only use)
+
+---
+
+## ADR-009: .devstar.json for Project Discovery
+
+**Date**: 2025-04-04
+**Status**: Accepted
+
+### Context
+
+AI agents working in a project directory need to know which DevStar project they're working on without being told the project ID manually.
+
+### Decision
+
+When `create_project` is called with a `project_dir` parameter, write a `.devstar.json` file to that directory containing the `project_id`. Agents can call `get_project_context` to read this file and get full project state.
+
+### Consequences
+
+- **Positive**: Zero-configuration project discovery for agents
+- **Positive**: Works across any AI agent that can read files
+- **Negative**: File must be manually deleted if the project is deleted from DevStar
+
+---
+
+## ADR-010: Transparent Window for Live Mode
+
+**Date**: 2025-04-04
+**Status**: Accepted
+
+### Context
+
+The minimized Live Mode button should look like a floating icon on the desktop, not a rectangular window with a solid background.
+
+### Decision
+
+- Active window uses `transparent: true` in Tauri config
+- Minimized state: transparent container with a white rounded button containing the app icon
+- Full panel state: white content areas on transparent window background
+- CSS forces `background: #ffffff` on content areas for readability
+
+### Consequences
+
+- **Positive**: Clean floating button aesthetic
+- **Positive**: Content always readable with solid white backgrounds
+- **Negative**: Requires careful CSS to avoid transparency bleeding through content

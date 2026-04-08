@@ -2,33 +2,31 @@
 
 ## System Overview
 
-DevStar is a Tauri v2 desktop application with a React + TypeScript frontend and a Rust backend using SQLite for persistence. The app manages project development checklists using a sprint-based workflow.
+DevStar is a Tauri v2 desktop application with a React + TypeScript frontend and a Rust backend using SQLite for persistence. It runs as a **background-first app** — starting as a system tray icon with an MCP server for AI agents, and only showing its UI on demand.
 
 ## Architecture Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    Tauri Desktop App                        │
-├──────────────────────────┬──────────────────────────────────┤
-│     Frontend (Web)       │      Backend (Rust)              │
-│                          │                                  │
-│  ┌────────────────────┐  │  ┌────────────────────────────┐ │
-│  │   React + TSX      │  │  │  Tauri Commands            │ │
-│  │   (Views/Comps)    │◄─┼─►│  (invoke/handler)          │ │
-│  └────────┬───────────┘  │  └────────────┬───────────────┘ │
-│           │              │               │                  │
-│  ┌────────▼───────────┐  │  ┌────────────▼───────────────┐ │
-│  │   Zustand Store    │  │  │  DB Layer (SQLite)         │ │
-│  │   (State Mgmt)     │  │  │  ┌──────────────────────┐  │ │
-│  └────────┬───────────┘  │  │  │  schema.sql          │  │ │
-│           │              │  │  │  seeds/              │  │ │
-│  ┌────────▼───────────┐  │  │  │  project_sprints.rs  │  │ │
-│  │   API Layer        │  │  │  │  templates.rs        │  │ │
-│  │   (invoke calls)   │  │  │  │  shared_sections.rs  │  │ │
-│  └────────────────────┘  │  │  │  shared_sprints.rs   │  │ │
-│                          │  │  └──────────────────────┘  │ │
-└──────────────────────────┘  └────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
+├──────────────────┬──────────────────────────────────────────┤
+│   Frontend       │   Backend (Rust)                         │
+│   (Web)          │                                          │
+│                  │  ┌────────────┐  ┌────────────────────┐  │
+│  React + TSX     │  │ MCP Server │  │ Tauri Commands     │  │
+│  Zustand Store   │◄─┤ (stdio)    │◄─┤ (invoke/handler)   │  │
+│  Tailwind CSS    │  └────────────┘  └────────┬───────────┘  │
+│                  │                           │              │
+│                  │  ┌────────────────────────▼───────────┐  │
+│                  │  │  DB Layer (SQLite)                 │  │
+│                  │  │  ├── schema.sql                    │  │
+│                  │  │  ├── seeds/ (12 templates)         │  │
+│                  │  │  └── *.rs (CRUD operations)        │  │
+│                  │  └────────────────────────────────────┘  │
+└──────────────────┴──────────────────────────────────────────┘
+         ▲
+         │ System Tray (left-click: open UI, right-click: menu)
+         └── Open DevStar | Live Mode | Stop DevStar
 ```
 
 ## Data Model
@@ -95,8 +93,8 @@ The Live Mode window and Management window communicate via Tauri events:
 
 ```
 App
-├── TitleBar
-├── Header (nav tabs: Projects | Library)
+├── TitleBar (custom, with app icon)
+├── Header (logo-bar, nav tabs: Projects | Library)
 │   └── Library sub-tabs (Templates | Shared Sections | Shared Sprints)
 ├── Main Content
 │   ├── ProjectsView
@@ -105,7 +103,7 @@ App
 │   ├── TemplateEditorView
 │   ├── SharedSectionsView
 │   └── SharedSprintsView
-└── ActiveMode (separate window)
+└── ActiveMode (separate window, transparent background)
 ```
 
 ## Backend Architecture
@@ -114,18 +112,21 @@ App
 
 ```
 src-tauri/src/
-├── lib.rs              # Tauri command registration, app setup, window management
+├── lib.rs              # Tauri commands, tray setup, MCP spawn, startup registry
 ├── main.rs             # Entry point
+├── mcp_server.rs       # MCP server binary (stdio JSON-RPC)
+├── rate_limit.rs       # Rate limiter for Tauri commands
 └── db/
     ├── mod.rs          # Module exports
     ├── types.rs        # Rust types matching DB schema
     ├── schema.sql      # SQLite schema
+    ├── tests.rs        # Unit tests
     ├── seeds/          # Seed data (10 sections, 8 sprints, 12 templates)
-    │   ├── mod.rs      # Seed orchestrator
+    │   ├── mod.rs      # Seed orchestrator + helper functions
     │   ├── shared_sections.rs
     │   ├── shared_sprints.rs
     │   └── templates/
-    │       ├── mod.rs  # Helper functions
+    │       ├── mod.rs
     │       ├── web_dev.rs
     │       ├── mobile_app.rs
     │       ├── desktop_app.rs
@@ -157,9 +158,37 @@ src-tauri/src/
 
 DevStar uses two Tauri windows:
 
-1. **Management** (`management`): Main window with full UI
-2. **Active** (`active`): Compact floating window showing the active sprint
+1. **Management** (`management`): Main window with full UI. Starts hidden (`visible: false`), shown on tray click.
+2. **Active** (`active`): Compact floating window showing the active sprint. Transparent background.
 
 The Active window can be:
 - **Full panel** (340×500px): Shows sprint name, sections, and checklist
-- **Minimized** (48×48px): Single round indigo button positioned at top-right of screen
+- **Minimized** (56×56px): Round button with app icon, positioned at top-right of screen
+
+## System Tray
+
+The app starts minimized to the system tray. The tray icon uses `app-icon.png` and provides:
+
+- **Left-click**: Open management window
+- **Right-click menu**:
+  - **Open DevStar** — Show management window
+  - **Live Mode** — Open active sprint window
+  - **Stop DevStar** — Kill MCP server and exit app
+
+## MCP Server
+
+A separate binary (`devstar-mcp`) that runs as a background child process:
+
+- Spawns on app startup (hidden, no console window on Windows)
+- Communicates via JSON-RPC over stdio
+- Shares the same SQLite database
+- Exposes 14 tools for AI agents to read/update project plans
+- Killed gracefully when the user selects "Stop DevStar" from the tray
+
+## Startup Behavior
+
+On first run, DevStar adds itself to the system startup:
+- **Windows**: Registry key at `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+- **Linux**: XDG autostart `.desktop` file at `~/.config/autostart/devstar.desktop`
+
+The app starts hidden (tray only) with MCP server running.
