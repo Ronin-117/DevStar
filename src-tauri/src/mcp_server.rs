@@ -16,7 +16,7 @@ use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-// ─── Database path (same as main app) ───
+// ─── Database path ───
 
 fn get_db_path() -> PathBuf {
     dirs::data_dir()
@@ -25,6 +25,8 @@ fn get_db_path() -> PathBuf {
         .join("devstar.db")
 }
 
+// ─── Agent Identity ───
+
 fn get_agent_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -32,15 +34,10 @@ fn get_agent_dir() -> PathBuf {
         .join("agents")
 }
 
-fn get_agent_id() -> String {
+fn get_or_create_agent_id(client_name: &str) -> String {
     let dir = get_agent_dir();
     std::fs::create_dir_all(&dir).ok();
-    // Use process name as agent identifier (e.g., "claude-code", "opencode", "antigravity")
-    let process_name = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
-        .unwrap_or_else(|| "unknown-agent".to_string());
-    let path = dir.join(format!("{}.json", process_name));
+    let path = dir.join(format!("{}.json", client_name));
     if let Ok(content) = std::fs::read_to_string(&path) {
         if let Ok(v) = serde_json::from_str::<Value>(&content) {
             if let Some(id) = v.get("id").and_then(|v| v.as_str()) {
@@ -49,10 +46,19 @@ fn get_agent_id() -> String {
         }
     }
     let id = Uuid::new_v4().to_string();
-    let data = json!({ "id": id, "name": process_name, "first_seen": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) });
+    let data = json!({
+        "id": id,
+        "name": client_name,
+        "first_seen": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    });
     std::fs::write(&path, serde_json::to_string(&data).unwrap_or_default()).ok();
     id
 }
+
+// ─── Project Context (.devstar.json) ───
 
 fn read_project_context(project_dir: &str) -> Result<Value, String> {
     let dir = if project_dir == "." || project_dir.is_empty() {
@@ -63,7 +69,7 @@ fn read_project_context(project_dir: &str) -> Result<Value, String> {
     let config_path = dir.join(".devstar.json");
     let content = std::fs::read_to_string(&config_path).map_err(|e| {
         format!(
-            "No .devstar.json found in {}. Create a project first with create_project.",
+            "No .devstar.json found in {}. Run `create_project` first.",
             dir.display()
         )
     })?;
@@ -73,7 +79,7 @@ fn read_project_context(project_dir: &str) -> Result<Value, String> {
         .get("project_id")
         .and_then(|v| v.as_i64())
         .ok_or("Missing project_id in .devstar.json")?;
-    Ok(json!({ "project_id": project_id, "config": config }))
+    Ok(json!({ "project_id": project_id, "project_name": config.get("project_name").and_then(|v| v.as_str()).unwrap_or(""), "config": config }))
 }
 
 fn write_project_context(
@@ -92,7 +98,10 @@ fn write_project_context(
         "project_id": project_id,
         "project_name": project_name,
         "template_id": template_id,
-        "created_at": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+        "created_at": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
     });
     std::fs::write(
         &config_path,
@@ -100,6 +109,47 @@ fn write_project_context(
     )
     .map_err(|e| format!("Failed to write .devstar.json: {}", e))?;
     Ok(())
+}
+
+// ─── Access Control ───
+//
+// Rules:
+// - If .devstar.json exists in working directory, the agent is SCOPED to that project.
+//   Project-scoped tools (get_project, get_active_sprint, update_item, add_item, etc.)
+//   will only work on the scoped project.
+// - Shared resources (templates, shared_sections, shared_sprints) are always accessible.
+// - create_project is always accessible (creates new project + writes .devstar.json).
+//
+// This means: agents in different project directories can only see/edit their own projects.
+// The human user via the UI can see ALL projects.
+
+/// Returns the scoped project_id from .devstar.json if it exists, otherwise None.
+fn get_scoped_project() -> Option<i64> {
+    if let Ok(ctx) = read_project_context(".") {
+        ctx.get("project_id").and_then(|v| v.as_i64())
+    } else {
+        None
+    }
+}
+
+/// If .devstar.json exists, verify the given project_id matches the scoped project.
+fn verify_project_access(project_id: i64) -> Result<(), String> {
+    if let Some(scoped_id) = get_scoped_project() {
+        if project_id != scoped_id {
+            return Err(format!(
+                "Access denied: .devstar.json in this directory scopes you to project {}. Requested project {}.",
+                scoped_id, project_id
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// If .devstar.json exists, return the scoped project_id. Otherwise error.
+fn require_scoped_project() -> Result<i64, String> {
+    get_scoped_project().ok_or_else(|| {
+        "No .devstar.json found in this directory. Agents must work in a project-scoped directory. Run `create_project` first.".to_string()
+    })
 }
 
 // ─── MCP Protocol Types ───
@@ -133,49 +183,8 @@ struct JsonRpcError {
 fn tool_definitions() -> Value {
     json!([
         {
-            "name": "list_templates",
-            "description": "List all available templates with sprint and section counts",
-            "inputSchema": { "type": "object", "properties": {} }
-        },
-        {
-            "name": "get_template",
-            "description": "Get a template's sprints, sections, and items",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "template_id": { "type": "integer", "description": "Template ID" }
-                },
-                "required": ["template_id"]
-            }
-        },
-        {
-            "name": "list_shared_sections",
-            "description": "List all shared sections with item counts",
-            "inputSchema": { "type": "object", "properties": {} }
-        },
-        {
-            "name": "list_shared_sprints",
-            "description": "List all shared sprints with section counts",
-            "inputSchema": { "type": "object", "properties": {} }
-        },
-        {
-            "name": "create_project",
-            "description": "Create a new project from a template",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string", "description": "Project name" },
-                    "template_id": { "type": "integer", "description": "Template ID to create from" },
-                    "description": { "type": "string", "description": "Optional description" },
-                    "color": { "type": "string", "description": "Optional hex color" },
-                    "project_dir": { "type": "string", "description": "Directory to write .devstar.json config to (optional)" }
-                },
-                "required": ["name", "template_id"]
-            }
-        },
-        {
             "name": "get_project_context",
-            "description": "Read .devstar.json from the current or specified directory and return full project details including active sprint",
+            "description": "Zero-config discovery. Reads .devstar.json from the working directory and returns compact project overview with active sprint sections/items.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -184,30 +193,62 @@ fn tool_definitions() -> Value {
             }
         },
         {
-            "name": "get_project",
-            "description": "Get project details with sprints, sections, items, and progress",
+            "name": "dashboard",
+            "description": "Compact overview of ALL projects: name, progress %, active sprint. Use to survey the workspace.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "create_project",
+            "description": "Create a new project from a template. Writes .devstar.json to project_dir for agent scoping.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "project_id": { "type": "integer", "description": "Project ID" }
+                    "name": { "type": "string", "description": "Project name" },
+                    "template_id": { "type": "integer", "description": "Template ID (use list_templates to find)" },
+                    "description": { "type": "string", "description": "Optional description" },
+                    "color": { "type": "string", "description": "Optional hex color" },
+                    "project_dir": { "type": "string", "description": "Directory to write .devstar.json (default: current dir)" }
                 },
-                "required": ["project_id"]
+                "required": ["name", "template_id"]
             }
         },
         {
-            "name": "get_active_sprint",
-            "description": "Get the current active sprint for a project",
+            "name": "get_active_sprint_detail",
+            "description": "Get the active sprint with all sections and items. Use to see what tasks need to be done. Only works in a scoped project.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "project_id": { "type": "integer", "description": "Project ID" }
+                    "project_id": { "type": "integer", "description": "Project ID (uses .devstar.json if omitted)" }
+                }
+            }
+        },
+        {
+            "name": "add_task",
+            "description": "Add a task to the active sprint. Specify section name or omit to add to first section. No section ID needed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "Task title" },
+                    "description": { "type": "string", "description": "Optional description" },
+                    "section_name": { "type": "string", "description": "Section name (optional, uses first section if omitted)" }
                 },
-                "required": ["project_id"]
+                "required": ["title"]
+            }
+        },
+        {
+            "name": "check_task",
+            "description": "Check off a task by title (partial match). No item ID needed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "Task title (partial match, case-insensitive)" }
+                },
+                "required": ["title"]
             }
         },
         {
             "name": "update_item",
-            "description": "Check/uncheck an item or add notes",
+            "description": "Check/uncheck an item by ID or add notes.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -220,7 +261,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "add_item",
-            "description": "Add a custom item to a section",
+            "description": "Add a custom item to a specific section (need section_id).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -232,52 +273,61 @@ fn tool_definitions() -> Value {
             }
         },
         {
-            "name": "set_sprint_status",
-            "description": "Set a sprint's status (pending, active, done)",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "sprint_id": { "type": "integer", "description": "Sprint ID" },
-                    "status": { "type": "string", "enum": ["pending", "active", "done"] }
-                },
-                "required": ["sprint_id", "status"]
-            }
-        },
-        {
             "name": "complete_sprint",
-            "description": "Mark all items in a sprint as done and advance to the next sprint",
+            "description": "Mark all items in active sprint done and advance to next sprint.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "sprint_id": { "type": "integer", "description": "Sprint ID" },
-                    "project_id": { "type": "integer", "description": "Project ID" }
-                },
-                "required": ["sprint_id", "project_id"]
+                    "project_id": { "type": "integer", "description": "Project ID (uses .devstar.json if omitted)" }
+                }
             }
         },
         {
             "name": "get_progress",
-            "description": "Get completion stats for a project (checked/total items)",
+            "description": "Get completion stats for the scoped project.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "project_id": { "type": "integer", "description": "Project ID" }
-                },
-                "required": ["project_id"]
+                    "project_id": { "type": "integer", "description": "Project ID (uses .devstar.json if omitted)" }
+                }
             }
         },
         {
             "name": "log_error",
-            "description": "Log an error as an unchecked todo item in an 'Agent Errors' section",
+            "description": "Log an error as an unchecked item in the active sprint. Auto-creates 'Agent Errors' section.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "project_id": { "type": "integer", "description": "Project ID" },
-                    "sprint_id": { "type": "integer", "description": "Sprint ID to add error to" },
                     "error": { "type": "string", "description": "Error message" }
                 },
-                "required": ["project_id", "sprint_id", "error"]
+                "required": ["error"]
             }
+        },
+        {
+            "name": "list_templates",
+            "description": "List all templates with sprint counts. Anyone can access this.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "get_template",
+            "description": "Get a template's sprints, sections, and items.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "template_id": { "type": "integer", "description": "Template ID" }
+                },
+                "required": ["template_id"]
+            }
+        },
+        {
+            "name": "list_shared_sections",
+            "description": "List all shared sections with item counts.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "list_shared_sprints",
+            "description": "List all shared sprints with section counts.",
+            "inputSchema": { "type": "object", "properties": {} }
         }
     ])
 }
@@ -285,20 +335,20 @@ fn tool_definitions() -> Value {
 // ─── Tool Handlers ───
 
 fn handle_list_templates(conn: &Connection) -> Result<Value, String> {
-    let mut stmt = conn.prepare(
-        "SELECT t.id, t.name, t.description, t.color,
-                (SELECT count(*) FROM template_sprints ts WHERE ts.template_id = t.id) as sprint_count
-         FROM templates t ORDER BY t.name"
-    ).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.id, t.name, t.description,
+                    (SELECT count(*) FROM template_sprints ts WHERE ts.template_id = t.id) as sc
+             FROM templates t ORDER BY t.name",
+        )
+        .map_err(|e| e.to_string())?;
 
     let templates: Vec<Value> = stmt
         .query_map([], |row| {
             Ok(json!({
                 "id": row.get::<_, i64>(0)?,
                 "name": row.get::<_, String>(1)?,
-                "description": row.get::<_, String>(2)?,
-                "color": row.get::<_, String>(3)?,
-                "sprint_count": row.get::<_, i64>(4)?,
+                "sprints": row.get::<_, i64>(2)?,
             }))
         })
         .map_err(|e| e.to_string())?
@@ -315,7 +365,7 @@ fn handle_get_template(conn: &Connection, params: &Value) -> Result<Value, Strin
         .ok_or("template_id required")?;
 
     let mut t_stmt = conn
-        .prepare("SELECT id, name, description, color FROM templates WHERE id = ?1")
+        .prepare("SELECT id, name, description FROM templates WHERE id = ?1")
         .map_err(|e| e.to_string())?;
     let template: Value = t_stmt
         .query_row([template_id], |row| {
@@ -323,50 +373,26 @@ fn handle_get_template(conn: &Connection, params: &Value) -> Result<Value, Strin
                 "id": row.get::<_, i64>(0)?,
                 "name": row.get::<_, String>(1)?,
                 "description": row.get::<_, String>(2)?,
-                "color": row.get::<_, String>(3)?,
             }))
         })
         .map_err(|e| e.to_string())?;
 
-    let mut s_stmt = conn.prepare(
-        "SELECT ts.id, ts.name, ts.description, ts.sort_order,
-                (SELECT count(*) FROM template_sprint_sections tss WHERE tss.sprint_id = ts.id) as section_count
-         FROM template_sprints ts WHERE ts.template_id = ?1 ORDER BY ts.sort_order"
-    ).map_err(|e| e.to_string())?;
+    let mut s_stmt = conn
+        .prepare(
+            "SELECT ts.id, ts.name, ts.description, ts.sort_order,
+                    (SELECT count(*) FROM template_sprint_sections tss WHERE tss.sprint_id = ts.id)
+             FROM template_sprints ts WHERE ts.template_id = ?1 ORDER BY ts.sort_order",
+        )
+        .map_err(|e| e.to_string())?;
 
     let sprints: Vec<Value> = s_stmt
         .query_map([template_id], |row| {
-            let sprint_id: i64 = row.get(0)?;
-            let mut sec_stmt = conn
-                .prepare(
-                    "SELECT tss.id, ss.name, ss.description, ss.color, tss.is_linked
-             FROM template_sprint_sections tss
-             JOIN shared_sections ss ON tss.section_id = ss.id
-             WHERE tss.sprint_id = ?1 ORDER BY tss.sort_order",
-                )
-                .map_err(|_| rusqlite::Error::InvalidQuery)?;
-
-            let sections: Vec<Value> = sec_stmt
-                .query_map([sprint_id], |r| {
-                    Ok(json!({
-                        "id": r.get::<_, i64>(0)?,
-                        "name": r.get::<_, String>(1)?,
-                        "description": r.get::<_, String>(2)?,
-                        "color": r.get::<_, String>(3)?,
-                        "is_linked": r.get::<_, bool>(4)?,
-                    }))
-                })
-                .map_err(|_| rusqlite::Error::InvalidQuery)?
-                .filter_map(|r| r.ok())
-                .collect();
-
             Ok(json!({
                 "id": row.get::<_, i64>(0)?,
                 "name": row.get::<_, String>(1)?,
                 "description": row.get::<_, String>(2)?,
                 "sort_order": row.get::<_, i64>(3)?,
-                "section_count": row.get::<_, i64>(4)?,
-                "sections": sections,
+                "sections": row.get::<_, i64>(4)?,
             }))
         })
         .map_err(|e| e.to_string())?
@@ -377,20 +403,20 @@ fn handle_get_template(conn: &Connection, params: &Value) -> Result<Value, Strin
 }
 
 fn handle_list_shared_sections(conn: &Connection) -> Result<Value, String> {
-    let mut stmt = conn.prepare(
-        "SELECT ss.id, ss.name, ss.description, ss.color,
-                (SELECT count(*) FROM shared_section_items ssi WHERE ssi.section_id = ss.id) as item_count
-         FROM shared_sections ss ORDER BY ss.name"
-    ).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT ss.id, ss.name, ss.description,
+                    (SELECT count(*) FROM shared_section_items ssi WHERE ssi.section_id = ss.id)
+             FROM shared_sections ss ORDER BY ss.name",
+        )
+        .map_err(|e| e.to_string())?;
 
     let sections: Vec<Value> = stmt
         .query_map([], |row| {
             Ok(json!({
                 "id": row.get::<_, i64>(0)?,
                 "name": row.get::<_, String>(1)?,
-                "description": row.get::<_, String>(2)?,
-                "color": row.get::<_, String>(3)?,
-                "item_count": row.get::<_, i64>(4)?,
+                "items": row.get::<_, i64>(3)?,
             }))
         })
         .map_err(|e| e.to_string())?
@@ -401,19 +427,20 @@ fn handle_list_shared_sections(conn: &Connection) -> Result<Value, String> {
 }
 
 fn handle_list_shared_sprints(conn: &Connection) -> Result<Value, String> {
-    let mut stmt = conn.prepare(
-        "SELECT ss.id, ss.name, ss.description,
-                (SELECT count(*) FROM shared_sprint_sections sss WHERE sss.sprint_id = ss.id) as section_count
-         FROM shared_sprints ss ORDER BY ss.sort_order"
-    ).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT ss.id, ss.name, ss.description,
+                    (SELECT count(*) FROM shared_sprint_sections sss WHERE sss.sprint_id = ss.id)
+             FROM shared_sprints ss ORDER BY ss.sort_order",
+        )
+        .map_err(|e| e.to_string())?;
 
     let sprints: Vec<Value> = stmt
         .query_map([], |row| {
             Ok(json!({
                 "id": row.get::<_, i64>(0)?,
                 "name": row.get::<_, String>(1)?,
-                "description": row.get::<_, String>(2)?,
-                "section_count": row.get::<_, i64>(3)?,
+                "sections": row.get::<_, i64>(3)?,
             }))
         })
         .map_err(|e| e.to_string())?
@@ -423,27 +450,162 @@ fn handle_list_shared_sprints(conn: &Connection) -> Result<Value, String> {
     Ok(json!({ "sprints": sprints }))
 }
 
+/// Compact dashboard: all projects with progress and active sprint.
+fn handle_dashboard(conn: &Connection) -> Result<Value, String> {
+    let mut p_stmt = conn
+        .prepare("SELECT id, name FROM projects ORDER BY name")
+        .map_err(|e| e.to_string())?;
+
+    let project_ids: Vec<i64> = p_stmt
+        .query_map([], |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut projects = Vec::new();
+    for pid in project_ids {
+        let name: String = conn
+            .query_row("SELECT name FROM projects WHERE id = ?", [pid], |r| r.get(0))
+            .unwrap_or_default();
+
+        let (checked, total): (i64, i64) = conn
+            .query_row(
+                "SELECT \
+                 (SELECT count(*) FROM project_items pi \
+                  JOIN project_sprint_sections pss ON pi.section_id = pss.id \
+                  JOIN project_sprints ps ON pss.sprint_id = ps.id \
+                  WHERE ps.project_id = ?1 AND pi.checked = 1), \
+                 (SELECT count(*) FROM project_items pi \
+                  JOIN project_sprint_sections pss ON pi.section_id = pss.id \
+                  JOIN project_sprints ps ON pss.sprint_id = ps.id \
+                  WHERE ps.project_id = ?1)",
+                [pid],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap_or((0, 0));
+
+        let active: Option<(String, i64)> = conn
+            .query_row(
+                "SELECT name, sort_order FROM project_sprints WHERE project_id = ?1 AND status = 'active' LIMIT 1",
+                [pid],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok();
+
+        projects.push(json!({
+            "id": pid,
+            "name": name,
+            "checked": checked,
+            "total": total,
+            "active_sprint": active.as_ref().map(|(n, o)| format!("Sprint {}: {}", o + 1, n)),
+        }));
+    }
+
+    Ok(json!({ "projects": projects }))
+}
+
+/// Full project context: reads .devstar.json and returns compact project + active sprint.
 fn handle_get_project_context(conn: &Connection, params: &Value) -> Result<Value, String> {
     let project_dir = params
         .get("project_dir")
         .and_then(|v| v.as_str())
         .unwrap_or(".");
     let ctx = read_project_context(project_dir)?;
-    let project_id = ctx.get("project_id").and_then(|v| v.as_i64()).unwrap();
+    let project_id = ctx
+        .get("project_id")
+        .and_then(|v| v.as_i64())
+        .unwrap();
 
-    // Get full project details
-    let project = handle_get_project(conn, &json!({ "project_id": project_id }))?;
-    let active = handle_get_active_sprint(conn, &json!({ "project_id": project_id }))?;
+    // Project overview
+    let (checked, total): (i64, i64) = conn
+        .query_row(
+            "SELECT \
+             (SELECT count(*) FROM project_items pi JOIN project_sprint_sections pss ON pi.section_id = pss.id JOIN project_sprints ps ON pss.sprint_id = ps.id WHERE ps.project_id = ?1 AND pi.checked = 1), \
+             (SELECT count(*) FROM project_items pi JOIN project_sprint_sections pss ON pi.section_id = pss.id JOIN project_sprints ps ON pss.sprint_id = ps.id WHERE ps.project_id = ?1)",
+            [project_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap_or((0, 0));
 
-    Ok(json!({
-        "project_dir": project_dir,
-        "project_id": project_id,
-        "project": project.get("project"),
-        "sprints": project.get("sprints"),
-        "progress": project.get("progress"),
-        "active_sprint": active.get("sprint"),
-        "active_sprint_sections": active.get("sections"),
-    }))
+    // Active sprint with sections and items
+    let active_sprint: Option<(i64, String, i64)> = conn
+        .query_row(
+            "SELECT id, name, sort_order FROM project_sprints WHERE project_id = ?1 AND status = 'active' LIMIT 1",
+            [project_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .ok();
+
+    let mut sections = Vec::new();
+    if let Some((sprint_id, sprint_name, sort_order)) = active_sprint {
+        let mut sec_stmt = conn
+            .prepare(
+                "SELECT pss.id, pss.name,
+                        (SELECT count(*) FROM project_items pi WHERE pi.section_id = pss.id),
+                        (SELECT count(*) FROM project_items pi WHERE pi.section_id = pss.id AND pi.checked = 1)
+                 FROM project_sprint_sections pss
+                 WHERE pss.sprint_id = ?1 ORDER BY pss.sort_order",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let sec_rows: Vec<(i64, String, i64, i64)> = sec_stmt
+            .query_map([sprint_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        for (sec_id, sec_name, item_count, checked_count) in &sec_rows {
+            let mut item_stmt = conn
+                .prepare(
+                    "SELECT id, title, checked FROM project_items WHERE section_id = ?1 ORDER BY sort_order",
+                )
+                .map_err(|e| e.to_string())?;
+
+            let items: Vec<Value> = item_stmt
+                .query_map([sec_id], |r| {
+                    Ok(json!({
+                        "id": r.get::<_, i64>(0)?,
+                        "title": r.get::<_, String>(1)?,
+                        "checked": r.get::<_, i64>(2)? != 0,
+                    }))
+                })
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            sections.push(json!({
+                "id": sec_id,
+                "name": sec_name,
+                "checked": checked_count,
+                "total": item_count,
+                "items": items,
+            }));
+        }
+
+        Ok(json!({
+            "project_id": project_id,
+            "project_name": ctx.get("project_name").and_then(|v| v.as_str()).unwrap_or(""),
+            "checked": checked,
+            "total": total,
+            "active_sprint": {
+                "id": sprint_id,
+                "name": sprint_name,
+                "sort_order": sort_order,
+                "sections": sections,
+            },
+            "agent_id": get_agent_id_for_project(project_id),
+        }))
+    } else {
+        Ok(json!({
+            "project_id": project_id,
+            "project_name": ctx.get("project_name").and_then(|v| v.as_str()).unwrap_or(""),
+            "checked": checked,
+            "total": total,
+            "active_sprint": null,
+        }))
+    }
 }
 
 fn handle_create_project(conn: &Connection, params: &Value) -> Result<Value, String> {
@@ -477,9 +639,11 @@ fn handle_create_project(conn: &Connection, params: &Value) -> Result<Value, Str
     let project_id = conn.last_insert_rowid();
 
     // Copy template sprints to project
-    let mut t_sprints = conn.prepare(
-        "SELECT id, name, description, sort_order FROM template_sprints WHERE template_id = ?1 ORDER BY sort_order"
-    ).map_err(|e| e.to_string())?;
+    let mut t_sprints = conn
+        .prepare(
+            "SELECT id, name, description, sort_order FROM template_sprints WHERE template_id = ?1 ORDER BY sort_order"
+        )
+        .map_err(|e| e.to_string())?;
 
     let template_sprints: Vec<(i64, String, String, i64)> = t_sprints
         .query_map([template_id], |row| {
@@ -497,9 +661,11 @@ fn handle_create_project(conn: &Connection, params: &Value) -> Result<Value, Str
         let ps_id = conn.last_insert_rowid();
 
         // Copy sections
-        let mut t_sections = conn.prepare(
-            "SELECT tss.section_id, tss.sort_order FROM template_sprint_sections tss WHERE tss.sprint_id = ?1 ORDER BY tss.sort_order"
-        ).map_err(|e| e.to_string())?;
+        let mut t_sections = conn
+            .prepare(
+                "SELECT tss.section_id, tss.sort_order FROM template_sprint_sections tss WHERE tss.sprint_id = ?1 ORDER BY tss.sort_order"
+            )
+            .map_err(|e| e.to_string())?;
 
         let section_rows: Vec<(i64, i64)> = t_sections
             .query_map([ts_id], |row| Ok((row.get(0)?, row.get(1)?)))
@@ -530,9 +696,11 @@ fn handle_create_project(conn: &Connection, params: &Value) -> Result<Value, Str
             let pss_id = conn.last_insert_rowid();
 
             // Copy items
-            let mut items = conn.prepare(
-                "SELECT title, description, sort_order FROM shared_section_items WHERE section_id = ?1 ORDER BY sort_order"
-            ).map_err(|e| e.to_string())?;
+            let mut items = conn
+                .prepare(
+                    "SELECT title, description, sort_order FROM shared_section_items WHERE section_id = ?1 ORDER BY sort_order"
+                )
+                .map_err(|e| e.to_string())?;
 
             let item_rows: Vec<(String, String, i64)> = items
                 .query_map([sec_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
@@ -549,216 +717,209 @@ fn handle_create_project(conn: &Connection, params: &Value) -> Result<Value, Str
         }
     }
 
-    // Write .devstar.json if project_dir specified
-    if !project_dir.is_empty() {
-        write_project_context(project_dir, project_id, name, template_id)?;
-    }
+    // Write .devstar.json
+    let dir = if !project_dir.is_empty() {
+        project_dir.to_string()
+    } else {
+        ".".to_string()
+    };
+    write_project_context(&dir, project_id, name, template_id)?;
 
     Ok(json!({ "project_id": project_id, "name": name }))
 }
 
-fn handle_get_project(conn: &Connection, params: &Value) -> Result<Value, String> {
-    let project_id = params
-        .get("project_id")
-        .and_then(|v| v.as_i64())
-        .ok_or("project_id required")?;
+/// Get active sprint detail for scoped project (no project_id needed if .devstar.json exists).
+fn handle_get_active_sprint_detail(conn: &Connection, params: &Value) -> Result<Value, String> {
+    let project_id = if let Some(pid) = params.get("project_id").and_then(|v| v.as_i64()) {
+        verify_project_access(pid)?;
+        pid
+    } else {
+        require_scoped_project()?
+    };
 
-    let mut p_stmt = conn
-        .prepare("SELECT id, name, description, template_id, color FROM projects WHERE id = ?1")
+    let active_sprint: Option<(i64, String, i64)> = conn
+        .query_row(
+            "SELECT id, name, sort_order FROM project_sprints WHERE project_id = ?1 AND status = 'active' LIMIT 1",
+            [project_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .ok();
+
+    if active_sprint.is_none() {
+        return Ok(json!({ "active_sprint": null }));
+    }
+
+    let (sprint_id, sprint_name, sort_order) = active_sprint.unwrap();
+
+    let mut sec_stmt = conn
+        .prepare(
+            "SELECT pss.id, pss.name,
+                    (SELECT count(*) FROM project_items pi WHERE pi.section_id = pss.id),
+                    (SELECT count(*) FROM project_items pi WHERE pi.section_id = pss.id AND pi.checked = 1)
+             FROM project_sprint_sections pss
+             WHERE pss.sprint_id = ?1 ORDER BY pss.sort_order",
+        )
         .map_err(|e| e.to_string())?;
 
-    let project: Value = p_stmt
-        .query_row([project_id], |row| {
-            Ok(json!({
-                "id": row.get::<_, i64>(0)?,
-                "name": row.get::<_, String>(1)?,
-                "description": row.get::<_, String>(2)?,
-                "template_id": row.get::<_, i64>(3)?,
-                "color": row.get::<_, String>(4)?,
-            }))
+    let sec_rows: Vec<(i64, String, i64, i64)> = sec_stmt
+        .query_map([sprint_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
         })
-        .map_err(|e| e.to_string())?;
-
-    let mut s_stmt = conn.prepare(
-        "SELECT ps.id, ps.name, ps.description, ps.status, ps.sort_order,
-                (SELECT count(*) FROM project_sprint_sections pss WHERE pss.sprint_id = ps.id) as section_count
-         FROM project_sprints ps WHERE ps.project_id = ?1 ORDER BY ps.sort_order"
-    ).map_err(|e| e.to_string())?;
-
-    let sprints: Vec<Value> = s_stmt.query_map([project_id], |row| {
-        let sprint_id: i64 = row.get(0)?;
-        let mut sec_stmt = conn.prepare(
-            "SELECT pss.id, pss.name, pss.description, pss.is_custom, pss.linked_from_section_id,
-                    (SELECT count(*) FROM project_items pi WHERE pi.section_id = pss.id) as item_count,
-                    (SELECT count(*) FROM project_items pi WHERE pi.section_id = pss.id AND pi.checked = 1) as checked_count
-             FROM project_sprint_sections pss WHERE pss.sprint_id = ?1 ORDER BY pss.sort_order"
-        ).map_err(|_| rusqlite::Error::InvalidQuery)?;
-
-        let sections: Vec<Value> = sec_stmt.query_map([sprint_id], |r| {
-            Ok(json!({
-                "id": r.get::<_, i64>(0)?,
-                "name": r.get::<_, String>(1)?,
-                "description": r.get::<_, String>(2)?,
-                "is_custom": r.get::<_, bool>(3)?,
-                "linked_from_section_id": r.get::<_, Option<i64>>(4)?,
-                "item_count": r.get::<_, i64>(5)?,
-                "checked_count": r.get::<_, i64>(6)?,
-            }))
-        }).map_err(|_| rusqlite::Error::InvalidQuery)?
+        .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
 
-        Ok(json!({
-            "id": row.get::<_, i64>(0)?,
-            "name": row.get::<_, String>(1)?,
-            "description": row.get::<_, String>(2)?,
-            "status": row.get::<_, String>(3)?,
-            "sort_order": row.get::<_, i64>(4)?,
-            "section_count": row.get::<_, i64>(5)?,
+    let mut sections = Vec::new();
+    for (sec_id, sec_name, item_count, checked_count) in &sec_rows {
+        let mut item_stmt = conn
+            .prepare(
+                "SELECT id, title, checked FROM project_items WHERE section_id = ?1 ORDER BY sort_order",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let items: Vec<Value> = item_stmt
+            .query_map([sec_id], |r| {
+                Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "title": r.get::<_, String>(1)?,
+                    "checked": r.get::<_, i64>(2)? != 0,
+                }))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        sections.push(json!({
+            "id": sec_id,
+            "name": sec_name,
+            "checked": checked_count,
+            "total": item_count,
+            "items": items,
+        }));
+    }
+
+    Ok(json!({
+        "project_id": project_id,
+        "active_sprint": {
+            "id": sprint_id,
+            "name": sprint_name,
+            "sort_order": sort_order,
             "sections": sections,
-        }))
-    }).map_err(|e| e.to_string())?
-    .filter_map(|r| r.ok())
-    .collect();
-
-    let (checked, total): (i64, i64) = conn.query_row(
-        "SELECT \
-            (SELECT count(*) FROM project_items pi JOIN project_sprint_sections pss ON pi.section_id = pss.id JOIN project_sprints ps ON pss.sprint_id = ps.id WHERE ps.project_id = ?1 AND pi.checked = 1), \
-            (SELECT count(*) FROM project_items pi JOIN project_sprint_sections pss ON pi.section_id = pss.id JOIN project_sprints ps ON pss.sprint_id = ps.id WHERE ps.project_id = ?1)",
-        [project_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    ).unwrap_or((0, 0));
-
-    Ok(
-        json!({ "project": project, "sprints": sprints, "progress": { "checked": checked, "total": total } }),
-    )
+        }
+    }))
 }
 
-fn handle_get_active_sprint(conn: &Connection, params: &Value) -> Result<Value, String> {
-    let project_id = params
-        .get("project_id")
-        .and_then(|v| v.as_i64())
-        .ok_or("project_id required")?;
+/// Add a task to the active sprint. Agent only needs title and optionally section name.
+fn handle_add_task(conn: &Connection, params: &Value) -> Result<Value, String> {
+    let project_id = require_scoped_project()?;
+    let title = params
+        .get("title")
+        .and_then(|v| v.as_str())
+        .ok_or("title required")?;
+    let description = params
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let section_name = params.get("section_name").and_then(|v| v.as_str());
 
-    let sprint_id: Option<i64> = conn
+    // Find active sprint
+    let sprint_id: i64 = conn
         .query_row(
             "SELECT id FROM project_sprints WHERE project_id = ?1 AND status = 'active' LIMIT 1",
             [project_id],
             |row| row.get(0),
         )
-        .ok();
+        .map_err(|_| "No active sprint found".to_string())?;
 
-    let sprint =
-        match sprint_id {
-            Some(sid) => {
-                let mut sec_stmt = conn
-                    .prepare(
-                        "SELECT pss.id, pss.name, pss.description, pss.is_custom,
-                        pi.id as item_id, pi.title, pi.description, pi.checked, pi.notes
-                 FROM project_sprint_sections pss
-                 LEFT JOIN project_items pi ON pi.section_id = pss.id
-                 WHERE pss.sprint_id = ?1
-                 ORDER BY pss.sort_order, pi.sort_order",
-                    )
-                    .map_err(|e| e.to_string())?;
+    // Find or create section
+    let section_id: i64 = if let Some(name) = section_name {
+        // Try to find existing section
+        let existing: Option<i64> = conn.query_row(
+                "SELECT id FROM project_sprint_sections WHERE sprint_id = ?1 AND name = ?2 LIMIT 1",
+                rusqlite::params![sprint_id, name],
+                |row| row.get(0),
+            )
+            .ok();
+        if let Some(id) = existing {
+            id
+        } else {
+            // Create new section
+            let max_order: i64 = conn
+                .query_row(
+                    "SELECT COALESCE(MAX(sort_order), -1) FROM project_sprint_sections WHERE sprint_id = ?1",
+                    [sprint_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO project_sprint_sections (sprint_id, name, description, sort_order, is_custom, linked_from_section_id) VALUES (?1, ?2, ?3, ?4, 1, NULL)",
+                (sprint_id, name, "", max_order + 1),
+            ).map_err(|e| e.to_string())?;
+            conn.last_insert_rowid()
+        }
+    } else {
+        // Use first section
+        conn.query_row(
+            "SELECT id FROM project_sprint_sections WHERE sprint_id = ?1 ORDER BY sort_order LIMIT 1",
+            [sprint_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "No sections in active sprint".to_string())?
+    };
 
-                let mut sections_map: std::collections::HashMap<i64, Value> =
-                    std::collections::HashMap::new();
-                let mut section_order: Vec<i64> = Vec::new();
+    // Add item
+    let max_order: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(sort_order), -1) FROM project_items WHERE section_id = ?1",
+            [section_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
 
-                let rows: Vec<(
-                    i64,
-                    String,
-                    String,
-                    bool,
-                    Option<i64>,
-                    Option<String>,
-                    Option<String>,
-                    Option<i64>,
-                    Option<String>,
-                )> = sec_stmt
-                    .query_map([sid], |row| {
-                        Ok((
-                            row.get(0)?,
-                            row.get(1)?,
-                            row.get(2)?,
-                            row.get(3)?,
-                            row.get(4)?,
-                            row.get(5)?,
-                            row.get(6)?,
-                            row.get(7)?,
-                            row.get(8)?,
-                        ))
-                    })
-                    .map_err(|e| e.to_string())?
-                    .filter_map(|r| r.ok())
-                    .collect();
+    conn.execute(
+        "INSERT INTO project_items (section_id, title, description, checked, notes, sort_order, is_custom) VALUES (?1, ?2, ?3, 0, '', ?4, 1)",
+        (section_id, title, description, max_order + 1),
+    ).map_err(|e| e.to_string())?;
 
-                for (
-                    sec_id,
-                    sec_name,
-                    sec_desc,
-                    sec_custom,
-                    item_id,
-                    item_title,
-                    item_desc,
-                    item_checked,
-                    item_notes,
-                ) in rows
-                {
-                    if !sections_map.contains_key(&sec_id) {
-                        sections_map.insert(
-                            sec_id,
-                            json!({
-                                "id": sec_id,
-                                "name": sec_name,
-                                "description": sec_desc,
-                                "is_custom": sec_custom,
-                                "items": [],
-                            }),
-                        );
-                        section_order.push(sec_id);
-                    }
-                    if let Some(iid) = item_id {
-                        let items = sections_map
-                            .get_mut(&sec_id)
-                            .unwrap()
-                            .get_mut("items")
-                            .unwrap()
-                            .as_array_mut()
-                            .unwrap();
-                        items.push(json!({
-                            "id": iid,
-                            "title": item_title.unwrap_or_default(),
-                            "description": item_desc.unwrap_or_default(),
-                            "checked": item_checked.unwrap_or(0) != 0,
-                            "notes": item_notes.unwrap_or_default(),
-                        }));
-                    }
-                }
+    let item_id = conn.last_insert_rowid();
+    Ok(json!({ "ok": true, "item_id": item_id, "section_id": section_id }))
+}
 
-                let sections: Vec<Value> = section_order
-                    .iter()
-                    .filter_map(|id| sections_map.get(id).cloned())
-                    .collect();
+/// Check off a task by title (partial, case-insensitive match).
+fn handle_check_task(conn: &Connection, params: &Value) -> Result<Value, String> {
+    let project_id = require_scoped_project()?;
+    let title = params
+        .get("title")
+        .and_then(|v| v.as_str())
+        .ok_or("title required")?;
 
-                let sprint_info: Value = conn.query_row(
-                "SELECT id, name, description, sort_order FROM project_sprints WHERE id = ?1",
-                [sid],
-                |row| Ok(json!({
-                    "id": row.get::<_, i64>(0)?,
-                    "name": row.get::<_, String>(1)?,
-                    "description": row.get::<_, String>(2)?,
-                    "sort_order": row.get::<_, i64>(3)?,
-                }))
-            ).unwrap_or(json!(null));
+    // Find the item in the active sprint
+    let pattern = format!("%{}%", title);
+    let item_id: Result<i64, _> = conn.query_row(
+        "SELECT pi.id FROM project_items pi
+         JOIN project_sprint_sections pss ON pi.section_id = pss.id
+         JOIN project_sprints ps ON pss.sprint_id = ps.id
+         WHERE ps.project_id = ?1 AND ps.status = 'active'
+           AND LOWER(pi.title) LIKE LOWER(?2)
+           AND pi.checked = 0
+         ORDER BY pi.sort_order LIMIT 1",
+        rusqlite::params![project_id, pattern],
+        |row| row.get(0),
+    );
 
-                json!({ "sprint": sprint_info, "sections": sections })
-            }
-            None => json!({ "sprint": null, "sections": [] }),
-        };
+    let item_id = item_id.map_err(|_| format!("No unchecked task matching '{}' found in active sprint", title))?;
 
-    Ok(sprint)
+    // Check it off
+    conn.execute(
+        "UPDATE project_items SET checked = 1 WHERE id = ?1",
+        [item_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Auto-advance sprint if all done
+    auto_advance_sprint(conn, item_id)?;
+
+    Ok(json!({ "ok": true, "item_id": item_id, "title": title }))
 }
 
 fn handle_update_item(conn: &Connection, params: &Value) -> Result<Value, String> {
@@ -767,12 +928,36 @@ fn handle_update_item(conn: &Connection, params: &Value) -> Result<Value, String
         .and_then(|v| v.as_i64())
         .ok_or("item_id required")?;
 
+    // Access control: verify item belongs to scoped project
+    if let Some(scoped_id) = get_scoped_project() {
+        let project_ok: Result<i64, _> = conn.query_row(
+            "SELECT count(*) FROM project_items pi
+             JOIN project_sprint_sections pss ON pi.section_id = pss.id
+             JOIN project_sprints ps ON pss.sprint_id = ps.id
+             WHERE pi.id = ?1 AND ps.project_id = ?2",
+            [item_id, scoped_id],
+            |row| row.get(0),
+        );
+        if let Ok(count) = project_ok {
+            if count == 0 {
+                return Err(format!(
+                    "Access denied: item {} is not in your scoped project.",
+                    item_id
+                ));
+            }
+        }
+    }
+
     if let Some(checked) = params.get("checked").and_then(|v| v.as_bool()) {
         conn.execute(
             "UPDATE project_items SET checked = ?1 WHERE id = ?2",
             (if checked { 1i64 } else { 0i64 }, item_id),
         )
         .map_err(|e| e.to_string())?;
+
+        if checked {
+            auto_advance_sprint(conn, item_id)?;
+        }
     }
     if let Some(notes) = params.get("notes").and_then(|v| v.as_str()) {
         conn.execute(
@@ -799,6 +984,34 @@ fn handle_add_item(conn: &Connection, params: &Value) -> Result<Value, String> {
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
+    // Access control
+    if let Some(scoped_id) = get_scoped_project() {
+        let project_ok: Result<i64, _> = conn.query_row(
+            "SELECT count(*) FROM project_items pi
+             JOIN project_sprint_sections pss ON pi.section_id = pss.id
+             JOIN project_sprints ps ON pss.sprint_id = ps.id
+             WHERE pss.id = ?1 AND ps.project_id = ?2",
+            [section_id, scoped_id],
+            |row| row.get(0),
+        );
+        // section might not have items yet, check via section->sprint->project
+        let section_project_ok: Result<i64, _> = conn.query_row(
+            "SELECT count(*) FROM project_sprint_sections pss
+             JOIN project_sprints ps ON pss.sprint_id = ps.id
+             WHERE pss.id = ?1 AND ps.project_id = ?2",
+            [section_id, scoped_id],
+            |row| row.get(0),
+        );
+        if let Ok(count) = section_project_ok {
+            if count == 0 {
+                return Err(format!(
+                    "Access denied: section {} is not in your scoped project.",
+                    section_id
+                ));
+            }
+        }
+    }
+
     let max_order: i64 = conn
         .query_row(
             "SELECT COALESCE(MAX(sort_order), -1) FROM project_items WHERE section_id = ?1",
@@ -816,34 +1029,21 @@ fn handle_add_item(conn: &Connection, params: &Value) -> Result<Value, String> {
     Ok(json!({ "ok": true, "item_id": item_id }))
 }
 
-fn handle_set_sprint_status(conn: &Connection, params: &Value) -> Result<Value, String> {
-    let sprint_id = params
-        .get("sprint_id")
-        .and_then(|v| v.as_i64())
-        .ok_or("sprint_id required")?;
-    let status = params
-        .get("status")
-        .and_then(|v| v.as_str())
-        .ok_or("status required")?;
-
-    conn.execute(
-        "UPDATE project_sprints SET status = ?1 WHERE id = ?2",
-        (status, sprint_id),
-    )
-    .map_err(|e| e.to_string())?;
-
-    Ok(json!({ "ok": true, "sprint_id": sprint_id, "status": status }))
-}
-
 fn handle_complete_sprint(conn: &Connection, params: &Value) -> Result<Value, String> {
-    let sprint_id = params
-        .get("sprint_id")
-        .and_then(|v| v.as_i64())
-        .ok_or("sprint_id required")?;
-    let project_id = params
-        .get("project_id")
-        .and_then(|v| v.as_i64())
-        .ok_or("project_id required")?;
+    let project_id = if let Some(pid) = params.get("project_id").and_then(|v| v.as_i64()) {
+        verify_project_access(pid)?;
+        pid
+    } else {
+        require_scoped_project()?
+    };
+
+    let sprint_id: i64 = conn
+        .query_row(
+            "SELECT id FROM project_sprints WHERE project_id = ?1 AND status = 'active' LIMIT 1",
+            [project_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "No active sprint".to_string())?;
 
     // Mark all items as checked
     conn.execute(
@@ -861,11 +1061,13 @@ fn handle_complete_sprint(conn: &Connection, params: &Value) -> Result<Value, St
     .map_err(|e| e.to_string())?;
 
     // Activate next sprint
-    let next: Option<i64> = conn.query_row(
-        "SELECT id FROM project_sprints WHERE project_id = ?1 AND status = 'pending' ORDER BY sort_order LIMIT 1",
-        [project_id],
-        |row| row.get(0),
-    ).ok();
+    let next: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM project_sprints WHERE project_id = ?1 AND status = 'pending' ORDER BY sort_order LIMIT 1",
+            [project_id],
+            |row| row.get(0),
+        )
+        .ok();
 
     if let Some(next_id) = next {
         conn.execute(
@@ -879,59 +1081,68 @@ fn handle_complete_sprint(conn: &Connection, params: &Value) -> Result<Value, St
 }
 
 fn handle_get_progress(conn: &Connection, params: &Value) -> Result<Value, String> {
-    let project_id = params
-        .get("project_id")
-        .and_then(|v| v.as_i64())
-        .ok_or("project_id required")?;
-
-    let (checked, total): (i64, i64) = conn.query_row(
-        "SELECT \
-            (SELECT count(*) FROM project_items pi JOIN project_sprint_sections pss ON pi.section_id = pss.id JOIN project_sprints ps ON pss.sprint_id = ps.id WHERE ps.project_id = ?1 AND pi.checked = 1), \
-            (SELECT count(*) FROM project_items pi JOIN project_sprint_sections pss ON pi.section_id = pss.id JOIN project_sprints ps ON pss.sprint_id = ps.id WHERE ps.project_id = ?1)",
-        [project_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    ).unwrap_or((0, 0));
-
-    let pct = if total > 0 {
-        (checked as f64 / total as f64 * 100.0).round()
+    let project_id = if let Some(pid) = params.get("project_id").and_then(|v| v.as_i64()) {
+        verify_project_access(pid)?;
+        pid
     } else {
-        0.0
+        require_scoped_project()?
     };
 
-    Ok(json!({ "checked": checked, "total": total, "percentage": pct as i64 }))
+    let (checked, total): (i64, i64) = conn
+        .query_row(
+            "SELECT \
+             (SELECT count(*) FROM project_items pi JOIN project_sprint_sections pss ON pi.section_id = pss.id JOIN project_sprints ps ON pss.sprint_id = ps.id WHERE ps.project_id = ?1 AND pi.checked = 1), \
+             (SELECT count(*) FROM project_items pi JOIN project_sprint_sections pss ON pi.section_id = pss.id JOIN project_sprints ps ON pss.sprint_id = ps.id WHERE ps.project_id = ?1)",
+            [project_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap_or((0, 0));
+
+    let pct = if total > 0 {
+        (checked as f64 / total as f64 * 100.0).round() as i64
+    } else {
+        0
+    };
+
+    Ok(json!({ "checked": checked, "total": total, "percentage": pct }))
 }
 
 fn handle_log_error(conn: &Connection, params: &Value) -> Result<Value, String> {
-    let project_id = params
-        .get("project_id")
-        .and_then(|v| v.as_i64())
-        .ok_or("project_id required")?;
-    let sprint_id = params
-        .get("sprint_id")
-        .and_then(|v| v.as_i64())
-        .ok_or("sprint_id required")?;
+    let project_id = require_scoped_project()?;
     let error = params
         .get("error")
         .and_then(|v| v.as_str())
         .ok_or("error required")?;
-    let agent_id = get_agent_id();
+    let agent_id = get_agent_id_for_project(project_id);
 
-    // Find or create "Agent Errors" section in this sprint
-    let section_id: Option<i64> = conn.query_row(
-        "SELECT pss.id FROM project_sprint_sections pss WHERE pss.sprint_id = ?1 AND pss.name = 'Agent Errors' LIMIT 1",
-        [sprint_id],
-        |row| row.get(0),
-    ).ok();
+    // Find active sprint
+    let sprint_id: i64 = conn
+        .query_row(
+            "SELECT id FROM project_sprints WHERE project_id = ?1 AND status = 'active' LIMIT 1",
+            [project_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "No active sprint".to_string())?;
+
+    // Find or create "Agent Errors" section
+    let section_id: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM project_sprint_sections WHERE sprint_id = ?1 AND name = 'Agent Errors' LIMIT 1",
+            [sprint_id],
+            |row| row.get(0),
+        )
+        .ok();
 
     let section_id = match section_id {
         Some(id) => id,
         None => {
-            let max_order: i64 = conn.query_row(
-                "SELECT COALESCE(MAX(sort_order), -1) FROM project_sprint_sections WHERE sprint_id = ?1",
-                [sprint_id],
-                |row| row.get(0),
-            ).map_err(|e| e.to_string())?;
-
+            let max_order: i64 = conn
+                .query_row(
+                    "SELECT COALESCE(MAX(sort_order), -1) FROM project_sprint_sections WHERE sprint_id = ?1",
+                    [sprint_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
             conn.execute(
                 "INSERT INTO project_sprint_sections (sprint_id, name, description, sort_order, is_custom, linked_from_section_id) VALUES (?1, 'Agent Errors', 'Errors logged by AI agents', ?2, 1, NULL)",
                 (sprint_id, max_order + 1),
@@ -960,7 +1171,76 @@ fn handle_log_error(conn: &Connection, params: &Value) -> Result<Value, String> 
     ).map_err(|e| e.to_string())?;
 
     let item_id = conn.last_insert_rowid();
-    Ok(json!({ "ok": true, "item_id": item_id, "section_id": section_id }))
+    Ok(json!({ "ok": true, "item_id": item_id }))
+}
+
+// ─── Helpers ───
+
+/// Mark sprint done and activate next if all items are done.
+fn auto_advance_sprint(conn: &Connection, item_id: i64) -> Result<(), String> {
+    let result: Result<(i64, i64), _> = conn.query_row(
+        "SELECT prs.project_id, pss.sprint_id FROM project_items pi
+         JOIN project_sprint_sections pss ON pi.section_id = pss.id
+         JOIN project_sprints prs ON pss.sprint_id = prs.id
+         WHERE pi.id = ?1",
+        [item_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    );
+    if let Ok((project_id, sprint_id)) = result {
+        let counts: Result<(i64, i64), _> = conn.query_row(
+            "SELECT
+               (SELECT count(*) FROM project_items pi2 JOIN project_sprint_sections pss2 ON pi2.section_id = pss2.id WHERE pss2.sprint_id = ?1),
+               (SELECT count(*) FROM project_items pi2 JOIN project_sprint_sections pss2 ON pi2.section_id = pss2.id WHERE pss2.sprint_id = ?1 AND pi2.checked = 1)",
+            [sprint_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        );
+        if let Ok((total, done)) = counts {
+            if total > 0 && total == done {
+                let _ = conn.execute(
+                    "UPDATE project_sprints SET status = 'done' WHERE id = ?1 AND status = 'active'",
+                    [sprint_id],
+                );
+                let next: Option<i64> = conn
+                    .query_row(
+                        "SELECT id FROM project_sprints WHERE project_id = ?1 AND status = 'pending' ORDER BY sort_order LIMIT 1",
+                        [project_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .ok();
+                if let Some(next_id) = next {
+                    let _ = conn.execute(
+                        "UPDATE project_sprints SET status = 'active' WHERE id = ?1",
+                        [next_id],
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Get agent ID for a project — uses the agent tracking based on client name from initialize.
+fn get_agent_id_for_project(_project_id: i64) -> String {
+    // Use the global agent_id since the MCP process tracks a single client identity
+    get_global_agent_id()
+}
+
+// Global agent ID storage (set during initialize)
+static mut GLOBAL_AGENT_ID: Option<String> = None;
+
+fn set_global_agent_id(id: String) {
+    unsafe {
+        GLOBAL_AGENT_ID = Some(id);
+    }
+}
+
+fn get_global_agent_id() -> String {
+    unsafe {
+        match &GLOBAL_AGENT_ID {
+            Some(id) => id.clone(),
+            None => "unknown".to_string(),
+        }
+    }
 }
 
 // ─── Main Loop ───
@@ -973,11 +1253,6 @@ fn main() {
         std::process::exit(1);
     }
 
-    let agent_id = get_agent_id();
-    // eprintln is used only for debugging; in production the MCP server
-    // should not write anything to stderr that could confuse clients.
-    // The inspector captures stderr as "info" notifications.
-
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
@@ -987,7 +1262,6 @@ fn main() {
             Ok(l) => l,
             Err(_) => continue,
         };
-        // Skip empty lines
         if line.trim().is_empty() {
             continue;
         }
@@ -1010,11 +1284,8 @@ fn main() {
             }
         };
 
-        // Notifications (no id) should not get a response per JSON-RPC 2.0 spec.
-        // The `initialized` notification from the client is one example.
         let is_notification = request.id.is_none();
 
-        // Only open DB connection for requests that need it
         let conn = if is_notification {
             None
         } else {
@@ -1038,19 +1309,28 @@ fn main() {
         };
 
         let result = match request.method.as_str() {
-            "initialize" => Ok(json!({
-                "protocolVersion": "2024-11-05",
-                "capabilities": { "tools": {} },
-                "serverInfo": { "name": "devstar-mcp", "version": "0.1.0" }
-            })),
-            "initialized" => {
-                // Client notification — no response needed
-                Ok(null_value())
+            "initialize" => {
+                // Extract client info for agent identity
+                let client_name = request
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("clientInfo"))
+                    .and_then(|c| c.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown-agent");
+
+                let agent_id = get_or_create_agent_id(client_name);
+                set_global_agent_id(agent_id.clone());
+
+                Ok(json!({
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": { "tools": {} },
+                    "serverInfo": { "name": "devstar-mcp", "version": "0.1.0" },
+                    "agent_id": agent_id,
+                }))
             }
-            "tools/list" => {
-                let _ = conn.as_ref(); // suppress unused warning
-                Ok(json!({ "tools": tool_definitions() }))
-            }
+            "initialized" => Ok(null_value()),
+            "tools/list" => Ok(json!({ "tools": tool_definitions() })),
             "tools/call" => {
                 let conn_ref = conn.as_ref().unwrap();
                 let params = request.params.as_ref().unwrap();
@@ -1062,13 +1342,14 @@ fn main() {
                     "get_template" => handle_get_template(conn_ref, &tool_params),
                     "list_shared_sections" => handle_list_shared_sections(conn_ref),
                     "list_shared_sprints" => handle_list_shared_sprints(conn_ref),
+                    "dashboard" => handle_dashboard(conn_ref),
                     "create_project" => handle_create_project(conn_ref, &tool_params),
                     "get_project_context" => handle_get_project_context(conn_ref, &tool_params),
-                    "get_project" => handle_get_project(conn_ref, &tool_params),
-                    "get_active_sprint" => handle_get_active_sprint(conn_ref, &tool_params),
+                    "get_active_sprint_detail" => handle_get_active_sprint_detail(conn_ref, &tool_params),
+                    "add_task" => handle_add_task(conn_ref, &tool_params),
+                    "check_task" => handle_check_task(conn_ref, &tool_params),
                     "update_item" => handle_update_item(conn_ref, &tool_params),
                     "add_item" => handle_add_item(conn_ref, &tool_params),
-                    "set_sprint_status" => handle_set_sprint_status(conn_ref, &tool_params),
                     "complete_sprint" => handle_complete_sprint(conn_ref, &tool_params),
                     "get_progress" => handle_get_progress(conn_ref, &tool_params),
                     "log_error" => handle_log_error(conn_ref, &tool_params),
@@ -1078,7 +1359,6 @@ fn main() {
             _ => Ok(null_value()),
         };
 
-        // Don't respond to notifications (JSON-RPC 2.0 spec)
         if is_notification {
             continue;
         }

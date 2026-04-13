@@ -111,14 +111,24 @@ export const useStore = create<AppState>((set, get) => ({
       const projects = await api.apiListProjects();
       set({ projects });
       const progressMap = new Map<number, [number, number]>();
+      const sprintMap = new Map<number, string>();
       for (const p of projects) {
         try {
           progressMap.set(p.id, await api.apiGetProjectProgress(p.id));
         } catch {
           progressMap.set(p.id, [0, 0]);
         }
+        // Also fetch the active sprint so the sprint tag shows for all projects
+        try {
+          const active = await api.apiGetActiveSprint(p.id);
+          if (active) {
+            sprintMap.set(p.id, `Sprint ${active.sort_order + 1}: ${active.name}`);
+          }
+        } catch {
+          // skip
+        }
       }
-      set({ projectProgressMap: progressMap });
+      set({ projectProgressMap: progressMap, currentSprintMap: sprintMap });
     } catch (e: unknown) {
       set({ error: (e as Error).message });
     }

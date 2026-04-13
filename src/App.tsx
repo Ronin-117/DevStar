@@ -27,6 +27,7 @@ function App() {
   const selectedTemplateId = useStore((s) => s.selectedTemplateId);
   const fetchTemplates = useStore((s) => s.fetchTemplates);
   const fetchProjects = useStore((s) => s.fetchProjects);
+  const fetchProjectDetail = useStore((s) => s.fetchProjectDetail);
   const error = useStore((s) => s.error);
   const clearError = useStore((s) => s.clearError);
   const [windowLabel, setWindowLabel] = useState('management');
@@ -44,7 +45,19 @@ function App() {
   useEffect(() => {
     fetchTemplates();
     fetchProjects();
-  }, [fetchTemplates, fetchProjects]);
+
+    // Poll every 3 seconds so changes made by MCP agents appear live in the UI.
+    // Also refreshes the selected project detail so the main window sees live updates.
+    const interval = setInterval(() => {
+      fetchProjects();
+      const pid = useStore.getState().selectedProjectId;
+      if (pid) {
+        fetchProjectDetail(pid, true); // silent = no loading spinner
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [fetchTemplates, fetchProjects, fetchProjectDetail]);
 
   if (windowLabel === 'active') {
     return <ActiveMode />;
