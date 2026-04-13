@@ -12,6 +12,7 @@ import {
   apiDeleteProjectItem,
   apiDeleteProjectSection,
   apiToggleProjectItem,
+  apiCheckAndAdvanceSprint,
 } from '../../lib/api';
 import { CollapsibleSection } from '../shared/CollapsibleSection';
 import { MiniSearchInput } from '../shared/MiniSearchInput';
@@ -206,18 +207,20 @@ export function ProjectDetailView() {
                     <CollapsibleSection
                       key={section.section.id}
                       section={section}
-                      projectId={selectedProjectId!}
                       onToggleItem={(itemId) => {
-                        apiToggleProjectItem(itemId).then(refresh).catch(() => {});
+                        apiToggleProjectItem(itemId)
+                          .then(() => apiCheckAndAdvanceSprint(selectedProjectId!))
+                          .then(() => refresh())
+                          .catch(() => {});
                       }}
                       onAddItem={(input) => {
-                        apiAddProjectItem(input).then(refresh).catch(() => {});
+                        apiAddProjectItem(input).then(() => refresh()).catch(() => {});
                       }}
                       onDeleteItem={(itemId) => {
-                        apiDeleteProjectItem(itemId).then(refresh).catch(() => {});
+                        apiDeleteProjectItem(itemId).then(() => refresh()).catch(() => {});
                       }}
                       onDeleteSection={(sectionId) => {
-                        apiDeleteProjectSection(sectionId).then(refresh).catch(() => {});
+                        apiDeleteProjectSection(sectionId).then(() => refresh()).catch(() => {});
                       }}
                     />
                   ))}

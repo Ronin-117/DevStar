@@ -159,11 +159,13 @@ export function ActiveMode() {
           <div key={section.section.id} className="border rounded-lg overflow-hidden bg-white">
             <CollapsibleSection
               section={section}
-              projectId={projectId}
               onToggleItem={(itemId) => {
                 apiToggleProjectItem(itemId)
                   .then(() => apiCheckAndAdvanceSprint(projectId))
-                  .then(() => refresh())
+                  .then(() => {
+                    // Immediately refetch to show the new active sprint if it advanced
+                    refresh();
+                  })
                   .catch(() => { });
               }}
               onAddItem={(input) => {

@@ -5,16 +5,14 @@ import type { ProjectSprintSectionWithItems } from '../../lib/types';
 
 interface CollapsibleSectionProps {
   section: ProjectSprintSectionWithItems;
-  projectId: number;
-  onToggleItem?: (itemId: number, projectId: number) => void;
-  onAddItem?: (input: { section_id: number; title: string; description?: string }, projectId: number) => void;
-  onDeleteItem?: (itemId: number, projectId: number) => void;
-  onDeleteSection?: (sectionId: number, projectId: number) => void;
+  onToggleItem?: (itemId: number) => void;
+  onAddItem?: (input: { section_id: number; title: string; description?: string }) => void;
+  onDeleteItem?: (itemId: number) => void;
+  onDeleteSection?: (sectionId: number) => void;
 }
 
 export function CollapsibleSection({
   section,
-  projectId,
   onToggleItem,
   onAddItem,
   onDeleteItem,
@@ -29,7 +27,7 @@ export function CollapsibleSection({
 
   const handleAddItem = () => {
     if (!newItemTitle.trim()) return;
-    onAddItem?.({ section_id: section.section.id, title: newItemTitle.trim() }, projectId);
+    onAddItem?.({ section_id: section.section.id, title: newItemTitle.trim() });
     setNewItemTitle('');
     setAddingItem(false);
   };
@@ -64,7 +62,7 @@ export function CollapsibleSection({
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                onDeleteSection(section.section.id, projectId);
+                onDeleteSection(section.section.id);
               }}
               className="text-gray-400 hover:text-red-500 text-xs"
             >
@@ -93,7 +91,7 @@ export function CollapsibleSection({
               >
                 <Checkbox
                   checked={item.checked}
-                  onChange={() => onToggleItem?.(item.id, projectId)}
+                  onChange={() => onToggleItem?.(item.id)}
                 />
                 <div className="flex-1 min-w-0">
                   <span
@@ -110,7 +108,7 @@ export function CollapsibleSection({
                 </div>
                 {item.is_custom && onDeleteItem && (
                   <button
-                    onClick={() => onDeleteItem(item.id, projectId)}
+                    onClick={() => onDeleteItem(item.id)}
                     className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 text-xs shrink-0"
                   >
                     &times;

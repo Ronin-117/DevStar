@@ -400,12 +400,16 @@ export const useStore = create<AppState>((set, get) => ({
   clearError: () => set({ error: null }),
 }));
 
-// Listen for events from the active window and update cached data in-place
+// Listen for events from the active window and update cached data in-place.
+// When all items in the active sprint become checked, also advance the sprint
+// (mark current as 'done', next pending as 'active') to keep the UI in sync.
 listen('project-item-toggled', (event: { payload: { itemId: number; checked: boolean } }) => {
   const { itemId, checked } = event.payload;
   const state = useStore.getState();
   const updated = new Map(state.projectSprints);
   let changedProjectId: number | null = null;
+  let changedSprints: ProjectSprintWithSections[] | null = null;
+
   for (const [projectId, sprints] of updated.entries()) {
     const newSprints = sprints.map((sprint) => {
       const newSections = sprint.sections.map((section) => {
@@ -421,26 +425,78 @@ listen('project-item-toggled', (event: { payload: { itemId: number; checked: boo
       return { ...sprint, sections: newSections };
     });
     if (changedProjectId !== null) {
-      updated.set(projectId, newSprints);
+      changedSprints = newSprints;
       break;
     }
   }
-  if (changedProjectId !== null) {
-    const newSprints = updated.get(changedProjectId);
-    if (newSprints) {
-      const totalChecked = newSprints.reduce(
-        (sum, s) => sum + s.sections.reduce((s2, sec) => s2 + sec.items.filter((i) => i.checked).length, 0),
+
+  if (changedProjectId !== null && changedSprints !== null) {
+    // Check if the active sprint just got fully completed — if so, advance it
+    const activeSprint = changedSprints.find((s) => s.sprint.status === 'active');
+    if (activeSprint) {
+      const totalItems = activeSprint.sections.reduce((sum, sec) => sum + sec.items.length, 0);
+      const checkedItems = activeSprint.sections.reduce(
+        (sum, sec) => sum + sec.items.filter((i) => i.checked).length,
         0,
       );
-      const totalItems = newSprints.reduce(
-        (sum, s) => sum + s.sections.reduce((s2, sec) => s2 + sec.items.length, 0),
-        0,
-      );
-      const progressMap = new Map(state.projectProgressMap);
-      progressMap.set(changedProjectId, [totalChecked, totalItems]);
-      useStore.setState({ projectSprints: updated, projectProgressMap: progressMap });
-    } else {
-      useStore.setState({ projectSprints: updated });
+      const allDone = totalItems > 0 && checkedItems >= totalItems;
+
+      if (allDone) {
+        // Find the next pending sprint by sort_order
+        const nextPending = changedSprints
+          .filter((s) => s.sprint.status === 'pending')
+          .sort((a, b) => a.sprint.sort_order - b.sprint.sort_order)[0];
+
+        const resultSprints = changedSprints.map((sprint) => {
+          if (sprint.sprint.id === activeSprint.sprint.id) {
+            return { ...sprint, sprint: { ...sprint.sprint, status: 'done' as const } };
+          }
+          if (nextPending && sprint.sprint.id === nextPending.sprint.id) {
+            return { ...sprint, sprint: { ...sprint.sprint, status: 'active' as const } };
+          }
+          return sprint;
+        });
+
+        updated.set(changedProjectId, resultSprints);
+
+        // Update progress map
+        const totalChecked = resultSprints.reduce(
+          (sum, s) => sum + s.sections.reduce((s2, sec) => s2 + sec.items.filter((i) => i.checked).length, 0),
+          0,
+        );
+        const total = resultSprints.reduce(
+          (sum, s) => sum + s.sections.reduce((s2, sec) => s2 + sec.items.length, 0),
+          0,
+        );
+        const progressMap = new Map(state.projectProgressMap);
+        progressMap.set(changedProjectId, [totalChecked, total]);
+
+        // Update current sprint map
+        const currentSprintMap = new Map(state.currentSprintMap);
+        const newActive = resultSprints.find((s) => s.sprint.status === 'active');
+        if (newActive) {
+          currentSprintMap.set(changedProjectId, `Sprint ${newActive.sprint.sort_order + 1}: ${newActive.sprint.name}`);
+        } else {
+          currentSprintMap.delete(changedProjectId);
+        }
+
+        useStore.setState({ projectSprints: updated, projectProgressMap: progressMap, currentSprintMap });
+        return;
+      }
     }
+
+    // No sprint advancement needed, just update item state
+    updated.set(changedProjectId, changedSprints);
+    const totalChecked = changedSprints.reduce(
+      (sum, s) => sum + s.sections.reduce((s2, sec) => s2 + sec.items.filter((i) => i.checked).length, 0),
+      0,
+    );
+    const totalItems = changedSprints.reduce(
+      (sum, s) => sum + s.sections.reduce((s2, sec) => s2 + sec.items.length, 0),
+      0,
+    );
+    const progressMap = new Map(state.projectProgressMap);
+    progressMap.set(changedProjectId, [totalChecked, totalItems]);
+    useStore.setState({ projectSprints: updated, projectProgressMap: progressMap });
   }
 }).catch(() => {});
