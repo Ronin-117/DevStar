@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use uuid::Uuid;
 
 // ─── Database path ───
@@ -1226,21 +1227,17 @@ fn get_agent_id_for_project(_project_id: i64) -> String {
 }
 
 // Global agent ID storage (set during initialize)
-static mut GLOBAL_AGENT_ID: Option<String> = None;
+static GLOBAL_AGENT_ID: OnceLock<String> = OnceLock::new();
 
 fn set_global_agent_id(id: String) {
-    unsafe {
-        GLOBAL_AGENT_ID = Some(id);
-    }
+    let _ = GLOBAL_AGENT_ID.set(id);
 }
 
 fn get_global_agent_id() -> String {
-    unsafe {
-        match &GLOBAL_AGENT_ID {
-            Some(id) => id.clone(),
-            None => "unknown".to_string(),
-        }
-    }
+    GLOBAL_AGENT_ID
+        .get()
+        .cloned()
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 // ─── Main Loop ───

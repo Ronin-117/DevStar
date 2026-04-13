@@ -14,6 +14,43 @@ use tauri::Manager;
 use tauri::tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 
+/// On first run, add the install directory to the user's PATH so
+/// `devstar-mcp` can be found from any working directory.
+fn ensure_path() {
+    #[cfg(target_os = "windows")]
+    {
+        use std::env;
+        use winreg::enums::HKEY_CURRENT_USER;
+        use winreg::RegKey;
+
+        let current_exe = env::current_exe().ok();
+        let install_dir = match current_exe.and_then(|p| p.parent().map(|d| d.to_path_buf())) {
+            Some(d) => d,
+            None => return,
+        };
+        let install_dir_str = install_dir.to_string_lossy().to_string();
+
+        // Check if already in PATH
+        if let Ok(path) = env::var("PATH") {
+            if path.split(';').any(|p| p.eq_ignore_ascii_case(&install_dir_str)) {
+                return;
+            }
+        }
+
+        // Read current user PATH from registry and append our dir
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        if let Ok(env_key) = hkcu.open_subkey("Environment") {
+            if let Ok(current_path) = env_key.get_value::<String, _>("PATH") {
+                if !current_path.split(';').any(|p| p.eq_ignore_ascii_case(&install_dir_str)) {
+                    let new_path = format!("{};{}", current_path, install_dir_str);
+                    let _ = env_key.set_value("PATH", &new_path);
+                }
+            }
+        }
+    }
+    // Non-Windows platforms: PATH is typically managed via shell profiles or package managers
+}
+
 struct AppState {
     db: Database,
     rate_limiter: RateLimiter,
@@ -751,6 +788,9 @@ pub fn run() {
         }
     }
     let rate_limiter = RateLimiter::new(30.0, 5.0);
+
+    // Ensure install dir is in PATH (first run only — checks before writing)
+    ensure_path();
 
     // Add to Windows startup on first run
     setup_startup_auto();
