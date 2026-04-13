@@ -116,7 +116,9 @@ struct JsonRpcRequest {
 struct JsonRpcResponse {
     jsonrpc: String,
     id: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<JsonRpcError>,
 }
 
@@ -972,7 +974,9 @@ fn main() {
     }
 
     let agent_id = get_agent_id();
-    eprintln!("DevStar MCP Server started (agent: {})", agent_id);
+    // eprintln is used only for debugging; in production the MCP server
+    // should not write anything to stderr that could confuse clients.
+    // The inspector captures stderr as "info" notifications.
 
     let stdin = io::stdin();
     let stdout = io::stdout();
@@ -983,6 +987,7 @@ fn main() {
             Ok(l) => l,
             Err(_) => continue,
         };
+        // Skip empty lines
         if line.trim().is_empty() {
             continue;
         }
@@ -1005,21 +1010,30 @@ fn main() {
             }
         };
 
-        let conn = match Connection::open(&db_path) {
-            Ok(c) => c,
-            Err(e) => {
-                let resp = JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
-                    id: request.id.clone(),
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32603,
-                        message: format!("DB error: {}", e),
-                    }),
-                };
-                writeln!(stdout, "{}", serde_json::to_string(&resp).unwrap()).ok();
-                stdout.flush().ok();
-                continue;
+        // Notifications (no id) should not get a response per JSON-RPC 2.0 spec.
+        // The `initialized` notification from the client is one example.
+        let is_notification = request.id.is_none();
+
+        // Only open DB connection for requests that need it
+        let conn = if is_notification {
+            None
+        } else {
+            match Connection::open(&db_path) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    let resp = JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id.clone(),
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32603,
+                            message: format!("DB error: {}", e),
+                        }),
+                    };
+                    writeln!(stdout, "{}", serde_json::to_string(&resp).unwrap()).ok();
+                    stdout.flush().ok();
+                    continue;
+                }
             }
         };
 
@@ -1029,32 +1043,45 @@ fn main() {
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "devstar-mcp", "version": "0.1.0" }
             })),
-            "tools/list" => Ok(json!({ "tools": tool_definitions() })),
+            "initialized" => {
+                // Client notification — no response needed
+                Ok(null_value())
+            }
+            "tools/list" => {
+                let _ = conn.as_ref(); // suppress unused warning
+                Ok(json!({ "tools": tool_definitions() }))
+            }
             "tools/call" => {
+                let conn_ref = conn.as_ref().unwrap();
                 let params = request.params.as_ref().unwrap();
                 let tool = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let tool_params = params.get("arguments").cloned().unwrap_or(json!({}));
 
                 match tool {
-                    "list_templates" => handle_list_templates(&conn),
-                    "get_template" => handle_get_template(&conn, &tool_params),
-                    "list_shared_sections" => handle_list_shared_sections(&conn),
-                    "list_shared_sprints" => handle_list_shared_sprints(&conn),
-                    "create_project" => handle_create_project(&conn, &tool_params),
-                    "get_project_context" => handle_get_project_context(&conn, &tool_params),
-                    "get_project" => handle_get_project(&conn, &tool_params),
-                    "get_active_sprint" => handle_get_active_sprint(&conn, &tool_params),
-                    "update_item" => handle_update_item(&conn, &tool_params),
-                    "add_item" => handle_add_item(&conn, &tool_params),
-                    "set_sprint_status" => handle_set_sprint_status(&conn, &tool_params),
-                    "complete_sprint" => handle_complete_sprint(&conn, &tool_params),
-                    "get_progress" => handle_get_progress(&conn, &tool_params),
-                    "log_error" => handle_log_error(&conn, &tool_params),
+                    "list_templates" => handle_list_templates(conn_ref),
+                    "get_template" => handle_get_template(conn_ref, &tool_params),
+                    "list_shared_sections" => handle_list_shared_sections(conn_ref),
+                    "list_shared_sprints" => handle_list_shared_sprints(conn_ref),
+                    "create_project" => handle_create_project(conn_ref, &tool_params),
+                    "get_project_context" => handle_get_project_context(conn_ref, &tool_params),
+                    "get_project" => handle_get_project(conn_ref, &tool_params),
+                    "get_active_sprint" => handle_get_active_sprint(conn_ref, &tool_params),
+                    "update_item" => handle_update_item(conn_ref, &tool_params),
+                    "add_item" => handle_add_item(conn_ref, &tool_params),
+                    "set_sprint_status" => handle_set_sprint_status(conn_ref, &tool_params),
+                    "complete_sprint" => handle_complete_sprint(conn_ref, &tool_params),
+                    "get_progress" => handle_get_progress(conn_ref, &tool_params),
+                    "log_error" => handle_log_error(conn_ref, &tool_params),
                     _ => Err(format!("Unknown tool: {}", tool)),
                 }
             }
             _ => Ok(null_value()),
         };
+
+        // Don't respond to notifications (JSON-RPC 2.0 spec)
+        if is_notification {
+            continue;
+        }
 
         let resp = match result {
             Ok(v) => JsonRpcResponse {
