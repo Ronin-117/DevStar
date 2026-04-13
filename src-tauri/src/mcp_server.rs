@@ -185,209 +185,209 @@ fn tool_definitions() -> Value {
     json!([
         {
             "name": "get_project_context",
-            "description": "Zero-config discovery. Reads .devstar.json from the working directory and returns compact project overview with active sprint sections/items.",
+            "description": "Zero-config project discovery. Reads .devstar.json from the current working directory (or specified project_dir) and returns a compact overview including: project name, total progress (checked/total), percentage, and the full active sprint with all sections and their items (title + checked status). Use this FIRST when you enter a new project directory to understand what you're working on. If no .devstar.json exists, this tool returns an error — use create_project to start a new project.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "project_dir": { "type": "string", "description": "Directory containing .devstar.json (default: current directory)" }
+                    "project_dir": { "type": "string", "description": "Directory containing .devstar.json. Leave empty to use current working directory." }
                 }
             }
         },
         {
             "name": "dashboard",
-            "description": "Compact overview of ALL projects: name, progress %, active sprint. Use to survey the workspace.",
+            "description": "Compact overview of ALL projects in the database. Returns each project's id, name, checked count, total count, and active sprint name. No arguments needed. Use this to survey the workspace and decide which project to work on.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
             "name": "create_project",
-            "description": "Create a new project from a template. Writes .devstar.json to project_dir for agent scoping.",
+            "description": "Create a new project from a template and write .devstar.json to the specified directory for agent scoping. Workflow: 1) Call list_templates to find available templates and their IDs. 2) Call create_project with name and template_id. 3) The project_dir (default: current directory) gets a .devstar.json file so future tools know which project to work on. This tool copies the template's full sprint/section/item hierarchy.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "name": { "type": "string", "description": "Project name" },
-                    "template_id": { "type": "integer", "description": "Template ID (use list_templates to find)" },
-                    "description": { "type": "string", "description": "Optional description" },
-                    "color": { "type": "string", "description": "Optional hex color" },
-                    "project_dir": { "type": "string", "description": "Directory to write .devstar.json (default: current dir)" }
+                    "name": { "type": "string", "description": "Project name (e.g., 'My API Service')" },
+                    "template_id": { "type": "integer", "description": "Template ID to create from. Call list_templates first to find the right ID." },
+                    "description": { "type": "string", "description": "Optional project description." },
+                    "color": { "type": "string", "description": "Optional hex color for the project (e.g., '#6366f1')." },
+                    "project_dir": { "type": "string", "description": "Directory to write .devstar.json. Leave empty to use current directory." }
                 },
                 "required": ["name", "template_id"]
             }
         },
         {
             "name": "get_active_sprint_detail",
-            "description": "Get the active sprint with all sections and items. Use to see what tasks need to be done. Only works in a scoped project.",
+            "description": "Get the current active sprint with all sections and their items (id, title, checked). Each section shows its id, name, checked count, and total count. Use this to see exactly what tasks need to be done right now. If no .devstar.json exists in the working directory, you must provide project_id. Returns null if no sprint is active.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "project_id": { "type": "integer", "description": "Project ID (uses .devstar.json if omitted)" }
+                    "project_id": { "type": "integer", "description": "Project ID. Optional if .devstar.json exists in working directory." }
                 }
             }
         },
         {
             "name": "add_task",
-            "description": "Add a task to the active sprint. Specify section name or omit to add to first section. No section ID needed.",
+            "description": "Add a new task to the active sprint. Requires only a title. The tool automatically finds the active sprint and adds the task to the first section. If you specify section_name, it finds a matching section or creates a new one with that name. No section_id or sprint_id needed — the tool figures it out from the scoped project. Use this to add new work items during planning or when you discover new requirements.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "title": { "type": "string", "description": "Task title" },
-                    "description": { "type": "string", "description": "Optional description" },
-                    "section_name": { "type": "string", "description": "Section name (optional, uses first section if omitted)" }
+                    "title": { "type": "string", "description": "Task title (e.g., 'Add rate limiting to API endpoints')" },
+                    "description": { "type": "string", "description": "Optional longer description for context." },
+                    "section_name": { "type": "string", "description": "Section to add to (e.g., 'Security'). If omitted, uses the first section. If the section doesn't exist, it's created." }
                 },
                 "required": ["title"]
             }
         },
         {
             "name": "check_task",
-            "description": "Check off a task by title (partial match). No item ID needed.",
+            "description": "Check off (mark as done) a task by its title. Uses partial, case-insensitive matching — you only need a unique substring. For example, title='rate limit' would match 'Add rate limiting to API endpoints'. If multiple tasks match, the first one (by sort order) is checked. After checking, the tool automatically checks if all tasks in the sprint are done and advances to the next sprint if so. Use this to complete tasks as you finish them.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "title": { "type": "string", "description": "Task title (partial match, case-insensitive)" }
+                    "title": { "type": "string", "description": "Task title or unique substring to match against (case-insensitive). e.g., 'rate limit' to find 'Add rate limiting to API endpoints'" }
                 },
                 "required": ["title"]
             }
         },
         {
             "name": "update_item",
-            "description": "Check/uncheck an item by ID or add notes.",
+            "description": "Update a specific item by its numeric ID. Can check/uncheck it (set checked to true/false) or add notes. This is the low-level tool — prefer check_task and uncheck_task for title-based operations which don't require knowing the ID. Use this when you have a specific item_id from another tool's response (like get_active_sprint_detail or get_tasks).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "item_id": { "type": "integer", "description": "Item ID" },
-                    "checked": { "type": "boolean", "description": "Whether the item is checked" },
-                    "notes": { "type": "string", "description": "Optional notes" }
+                    "item_id": { "type": "integer", "description": "Numeric item ID from a tool response (e.g., from get_active_sprint_detail or get_tasks)." },
+                    "checked": { "type": "boolean", "description": "Set to true to mark done, false to mark undone." },
+                    "notes": { "type": "string", "description": "Optional notes to attach to the item." }
                 },
                 "required": ["item_id"]
             }
         },
         {
             "name": "add_item",
-            "description": "Add a custom item to a specific section (need section_id).",
+            "description": "Add a task to a specific section by its numeric ID. This is the low-level version of add_task (which auto-finds sections). Use only when you have a section_id from get_active_sprint_detail or get_sprint responses. Most agents should prefer add_task instead.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "section_id": { "type": "integer", "description": "Section ID" },
-                    "title": { "type": "string", "description": "Item title" },
-                    "description": { "type": "string", "description": "Optional description" }
+                    "section_id": { "type": "integer", "description": "Numeric section ID (from get_active_sprint_detail or get_sprint responses)." },
+                    "title": { "type": "string", "description": "Task title." },
+                    "description": { "type": "string", "description": "Optional task description." }
                 },
                 "required": ["section_id", "title"]
             }
         },
         {
             "name": "complete_sprint",
-            "description": "Mark all items in active sprint done and advance to next sprint.",
+            "description": "Mark ALL tasks in the active sprint as done, mark the sprint as done, and activate the next pending sprint. No arguments needed if .devstar.json exists. Use this when you want to fast-forward past a sprint without checking individual tasks.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "project_id": { "type": "integer", "description": "Project ID (uses .devstar.json if omitted)" }
+                    "project_id": { "type": "integer", "description": "Project ID. Optional if .devstar.json exists in working directory." }
                 }
             }
         },
         {
             "name": "get_progress",
-            "description": "Get completion stats for the scoped project.",
+            "description": "Get overall project completion stats: checked count, total count, and percentage. No arguments needed if .devstar.json exists. Use this to report progress to users or check how far along the project is.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "project_id": { "type": "integer", "description": "Project ID (uses .devstar.json if omitted)" }
+                    "project_id": { "type": "integer", "description": "Project ID. Optional if .devstar.json exists in working directory." }
                 }
             }
         },
         {
             "name": "log_error",
-            "description": "Log an error as an unchecked item in the active sprint. Auto-creates 'Agent Errors' section.",
+            "description": "Log an error or issue as an unchecked task in the active sprint. Automatically creates an 'Agent Errors' section if it doesn't exist. The error is tagged with your agent ID for attribution. Use this when you encounter problems, hit blockers, or need to flag issues for the human user to review.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "error": { "type": "string", "description": "Error message" }
+                    "error": { "type": "string", "description": "Description of the error or issue (e.g., 'Failed to compile: missing dependency libfoo')" }
                 },
                 "required": ["error"]
             }
         },
         {
             "name": "get_project_sprints",
-            "description": "List ALL sprints with status, progress, and section counts. Use to understand the full project plan.",
+            "description": "List ALL sprints in the project with their status (pending/active/done), progress (checked/total tasks), and section counts. Returns sprints ordered by their sort_order (1-based position). Use this to understand the full project plan, see which sprints are done, which is current, and what's coming up. This is the best tool for getting the big picture of where a project stands.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
             "name": "get_sprint",
-            "description": "Get any sprint by number (1-based) or name with sections and items. Use to inspect past/upcoming sprints.",
+            "description": "Get detailed information about any specific sprint — its sections, tasks, and their checked status. Find a sprint by its 1-based number (number=1 for the first sprint) or by name (partial match, case-insensitive). Use this to inspect past sprints (what was done), the current sprint (what's being worked on), or future sprints (what's planned). Example: number=3 gets the third sprint, or name='testing' finds any sprint with 'testing' in its name.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "number": { "type": "integer", "description": "Sprint number (1-based)" },
-                    "name": { "type": "string", "description": "Sprint name (partial match)" }
+                    "number": { "type": "integer", "description": "Sprint number (1-based). Sprint 1 is the first sprint. Mutually exclusive with name." },
+                    "name": { "type": "string", "description": "Sprint name for partial, case-insensitive matching. e.g., 'test' finds 'Testing & QA'. Mutually exclusive with number." }
                 }
             }
         },
         {
             "name": "get_tasks",
-            "description": "List tasks in the active sprint, optionally filtered by status. Use to see what's left vs what's done.",
+            "description": "List tasks in the active sprint, optionally filtered by their status. Returns tasks with their id, title, checked status, and section name. Use status='pending' to see what's left to do, status='done' to see what's completed, or status='all' to see everything. This is the best tool for daily standup — call it with status='pending' to know what to work on next.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "status": { "type": "string", "enum": ["pending", "done", "all"], "description": "Filter: 'pending' (unchecked), 'done' (checked), or 'all'" }
+                    "status": { "type": "string", "enum": ["pending", "done", "all"], "description": "Filter tasks: 'pending' = unchecked tasks still to do, 'done' = completed tasks, 'all' = everything. Default is 'pending'." }
                 }
             }
         },
         {
             "name": "uncheck_task",
-            "description": "Uncheck a task by title (partial match). Undo accidental check.",
+            "description": "Uncheck (mark as not done) a task by its title. Uses partial, case-insensitive matching — only needs a unique substring. Finds the first matching CHECKED task and unchecks it. Use this to undo accidental check-offs or to re-open a task that needs more work. This is the reverse of check_task.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "title": { "type": "string", "description": "Task title (partial match, case-insensitive)" }
+                    "title": { "type": "string", "description": "Task title or unique substring to match against a CHECKED task (case-insensitive)." }
                 },
                 "required": ["title"]
             }
         },
         {
             "name": "add_section",
-            "description": "Add a new section to the active sprint. Use to organize tasks into new categories.",
+            "description": "Add a new section (category) to the active sprint. Use this to organize tasks when the existing sections don't fit the work you're doing. The section is added at the end of the sprint. After creating a section, use add_task with section_name to add tasks to it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "name": { "type": "string", "description": "Section name" },
-                    "description": { "type": "string", "description": "Optional description" }
+                    "name": { "type": "string", "description": "Section name (e.g., 'Deployment', 'Performance', 'Bug Fixes')" },
+                    "description": { "type": "string", "description": "Optional section description." }
                 },
                 "required": ["name"]
             }
         },
         {
             "name": "search_tasks",
-            "description": "Search all tasks in the project by keyword. Finds matching tasks across all sections and sprints.",
+            "description": "Search ALL tasks across ALL sprints in the project by keyword. Returns matching tasks with their id, title, checked status, section name, sprint name, and sprint status. Use this when you need to find tasks related to a specific topic (e.g., 'security', 'database', 'auth') regardless of which sprint or section they're in. The search is case-insensitive partial match.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string", "description": "Search term (case-insensitive partial match)" }
+                    "query": { "type": "string", "description": "Search keyword (case-insensitive partial match against task titles). e.g., 'auth' to find all authentication-related tasks." }
                 },
                 "required": ["query"]
             }
         },
         {
             "name": "list_templates",
-            "description": "List all templates with sprint counts. Anyone can access this.",
+            "description": "List all available project templates with their id, name, and sprint count. This is a shared resource — accessible from any directory without .devstar.json. Use this first before create_project to find the right template_id for your project type.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
             "name": "get_template",
-            "description": "Get a template's sprints, sections, and items.",
+            "description": "Get a template's structure: its sprints (name, description, sort_order, section count). Use this to understand what a template includes before creating a project from it. Requires template_id from list_templates.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "template_id": { "type": "integer", "description": "Template ID" }
+                    "template_id": { "type": "integer", "description": "Template ID from list_templates response." }
                 },
                 "required": ["template_id"]
             }
         },
         {
             "name": "list_shared_sections",
-            "description": "List all shared sections with item counts.",
+            "description": "List all reusable section templates with their id, name, and item count. Sections are pre-built checklists that can be added to any sprint. Use this to see what checklist blocks are available when planning a project.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
             "name": "list_shared_sprints",
-            "description": "List all shared sprints with section counts.",
+            "description": "List all reusable sprint templates with their id, name, and section count. These are pre-built sprint templates that can be added to any project. Use this when adding sprints to a project.",
             "inputSchema": { "type": "object", "properties": {} }
         }
     ])
