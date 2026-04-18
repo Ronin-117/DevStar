@@ -4,8 +4,6 @@
 //! Connects via JSON-RPC over stdio following the MCP protocol.
 //! Shares the same SQLite database as the main Tauri app.
 
-#![allow(dead_code)]
-#![allow(unused_variables)]
 #![allow(clippy::type_complexity)]
 #![allow(clippy::map_entry)]
 
@@ -14,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use uuid::Uuid;
 
 // ─── Database path ───
@@ -68,7 +66,8 @@ fn read_project_context(project_dir: &str) -> Result<Value, String> {
         PathBuf::from(project_dir)
     };
     let config_path = dir.join(".devstar.json");
-    let content = std::fs::read_to_string(&config_path).map_err(|e| {
+    let content = std::fs::read_to_string(&config_path).map_err(|_e| {
+
         format!(
             "No .devstar.json found in {}. Run `create_project` first.",
             dir.display()
@@ -86,6 +85,7 @@ fn read_project_context(project_dir: &str) -> Result<Value, String> {
 fn write_project_context(
     project_dir: &str,
     project_id: i64,
+    project_uuid: &str,
     project_name: &str,
     template_id: i64,
 ) -> Result<(), String> {
@@ -97,6 +97,7 @@ fn write_project_context(
     let config_path = dir.join(".devstar.json");
     let config = json!({
         "project_id": project_id,
+        "project_uuid": project_uuid,
         "project_name": project_name,
         "template_id": template_id,
         "created_at": std::time::SystemTime::now()
@@ -113,51 +114,49 @@ fn write_project_context(
 }
 
 // ─── Access Control ───
-//
-// Rules:
-// - If .devstar.json exists in working directory, the agent is SCOPED to that project.
-//   Project-scoped tools (get_project, get_active_sprint, update_item, add_item, etc.)
-//   will only work on the scoped project.
-// - Shared resources (templates, shared_sections, shared_sprints) are always accessible.
-// - create_project is always accessible (creates new project + writes .devstar.json).
-//
-// This means: agents in different project directories can only see/edit their own projects.
-// The human user via the UI can see ALL projects.
 
-/// Returns the scoped project_id from .devstar.json if it exists, otherwise None.
-fn get_scoped_project() -> Option<i64> {
-    if let Ok(ctx) = read_project_context(".") {
-        ctx.get("project_id").and_then(|v| v.as_i64())
-    } else {
-        None
-    }
+fn get_project_id_from_uuid(conn: &Connection, uuid: &str) -> Option<i64> {
+    conn.query_row(
+        "SELECT id FROM projects WHERE uuid = ?1 LIMIT 1",
+        [uuid],
+        |row| row.get(0),
+    ).ok()
 }
 
-/// If .devstar.json exists, verify the given project_id matches the scoped project.
-fn verify_project_access(project_id: i64) -> Result<(), String> {
-    if let Some(scoped_id) = get_scoped_project() {
-        if project_id != scoped_id {
-            return Err(format!(
-                "Access denied: .devstar.json in this directory scopes you to project {}. Requested project {}.",
-                scoped_id, project_id
-            ));
+/// Resolve project_id from params or directory search.
+fn resolve_project_id(params: &Value, conn: &Connection) -> Option<i64> {
+    if let Some(pid) = params.get("project_id").and_then(|v| v.as_i64()) {
+        return Some(pid);
+    }
+    // BUG-01: also resolve project_uuid
+    if let Some(uuid) = params.get("project_uuid").and_then(|v| v.as_str()) {
+        if let Some(pid) = get_project_id_from_uuid(conn, uuid) {
+            return Some(pid);
         }
     }
-    Ok(())
+    if let Ok(ctx) = read_project_context(".") {
+        return ctx.get("project_id").and_then(|v| v.as_i64());
+    }
+    None
 }
 
-/// If .devstar.json exists, return the scoped project_id. Otherwise error.
-fn require_scoped_project() -> Result<i64, String> {
-    get_scoped_project().ok_or_else(|| {
-        "No .devstar.json found in this directory. Agents must work in a project-scoped directory. Run `create_project` first.".to_string()
-    })
+/// Get project_id, returning a helpful error if none found.
+fn require_project_id(params: &Value, conn: &Connection) -> Result<i64, String> {
+    if let Some(pid) = get_scoped_project() {
+        return Ok(pid);
+    }
+    if let Some(pid) = resolve_project_id(params, conn) {
+        return Ok(pid);
+    }
+    Err("No project found. Run from a project directory or pass project_id.".to_string())
 }
 
 // ─── MCP Protocol Types ───
 
 #[derive(Deserialize)]
 struct JsonRpcRequest {
-    jsonrpc: String,
+    #[serde(rename = "jsonrpc")]
+    _jsonrpc: String,
     id: Option<Value>,
     method: String,
     params: Option<Value>,
@@ -179,10 +178,39 @@ struct JsonRpcError {
     message: String,
 }
 
+// ─── Session State ───
+
+static ACTIVE_PROJECT_ID: OnceLock<Mutex<Option<i64>>> = OnceLock::new();
+
+fn get_active_project() -> Option<i64> {
+    *ACTIVE_PROJECT_ID
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+fn set_active_project(pid: i64) {
+    *ACTIVE_PROJECT_ID
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(pid);
+}
+
 // ─── Tool Definitions ───
 
 fn tool_definitions() -> Value {
     json!([
+        {
+            "name": "initialize",
+            "description": "Initialize the agent session by setting the project scope. Call this tool with a project_uuid (found in .devstar.json) immediately upon startup to lock the session to a specific project. This enables all other tools to operate without needing project-specific arguments. The project_uuid must be at the top level of the params object.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project_uuid": { "type": "string", "description": "The unique ID for the project from its .devstar.json file." }
+                },
+                "required": ["project_uuid"]
+            }
+        },
         {
             "name": "get_project_context",
             "description": "Zero-config project discovery. Reads .devstar.json from the current working directory (or specified project_dir) and returns a compact overview including: project name, total progress (checked/total), percentage, and the full active sprint with all sections and their items (title + checked status). Use this FIRST when you enter a new project directory to understand what you're working on. If no .devstar.json exists, this tool returns an error — use create_project to start a new project.",
@@ -393,6 +421,16 @@ fn tool_definitions() -> Value {
     ])
 }
 
+fn get_scoped_project() -> Option<i64> {
+    get_active_project()
+}
+
+fn like_escape(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 // ─── Tool Handlers ───
 
 fn handle_list_templates(conn: &Connection) -> Result<Value, String> {
@@ -409,7 +447,7 @@ fn handle_list_templates(conn: &Connection) -> Result<Value, String> {
             Ok(json!({
                 "id": row.get::<_, i64>(0)?,
                 "name": row.get::<_, String>(1)?,
-                "sprints": row.get::<_, i64>(2)?,
+                "sprints": row.get::<_, i64>(3)?,
             }))
         })
         .map_err(|e| e.to_string())?
@@ -656,7 +694,7 @@ fn handle_get_project_context(conn: &Connection, params: &Value) -> Result<Value
                 "sort_order": sort_order,
                 "sections": sections,
             },
-            "agent_id": get_agent_id_for_project(project_id),
+            "agent_id": get_global_agent_id(),
         }))
     } else {
         Ok(json!({
@@ -691,9 +729,25 @@ fn handle_create_project(conn: &Connection, params: &Value) -> Result<Value, Str
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
+    // Verify template exists (BUG-10)
+    let template_exists: bool = conn
+        .query_row(
+            "SELECT count(*) FROM templates WHERE id = ?1",
+            [template_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0) > 0;
+
+    if !template_exists {
+        return Err(format!("Template with id {} not found. Call list_templates first.", template_id));
+    }
+
+    // Generate a unique UUID for the project
+    let project_uuid = Uuid::new_v4().to_string();
+
     conn.execute(
-        "INSERT INTO projects (name, description, template_id, color) VALUES (?1, ?2, ?3, ?4)",
-        (name, description, template_id, color),
+        "INSERT INTO projects (uuid, name, description, template_id, color) VALUES (?1, ?2, ?3, ?4, ?5)",
+        (&project_uuid, name, description, template_id, color),
     )
     .map_err(|e| e.to_string())?;
 
@@ -784,19 +838,14 @@ fn handle_create_project(conn: &Connection, params: &Value) -> Result<Value, Str
     } else {
         ".".to_string()
     };
-    write_project_context(&dir, project_id, name, template_id)?;
+    write_project_context(&dir, project_id, &project_uuid, name, template_id)?;
 
-    Ok(json!({ "project_id": project_id, "name": name }))
+    Ok(json!({ "project_id": project_id, "project_uuid": project_uuid, "name": name }))
 }
 
 /// Get active sprint detail for scoped project (no project_id needed if .devstar.json exists).
 fn handle_get_active_sprint_detail(conn: &Connection, params: &Value) -> Result<Value, String> {
-    let project_id = if let Some(pid) = params.get("project_id").and_then(|v| v.as_i64()) {
-        verify_project_access(pid)?;
-        pid
-    } else {
-        require_scoped_project()?
-    };
+    let project_id = require_project_id(params, conn)?;
 
     let active_sprint: Option<(i64, String, i64)> = conn
         .query_row(
@@ -872,7 +921,7 @@ fn handle_get_active_sprint_detail(conn: &Connection, params: &Value) -> Result<
 
 /// Add a task to the active sprint. Agent only needs title and optionally section name.
 fn handle_add_task(conn: &Connection, params: &Value) -> Result<Value, String> {
-    let project_id = require_scoped_project()?;
+    let project_id = require_project_id(params, conn)?;
     let title = params
         .get("title")
         .and_then(|v| v.as_str())
@@ -895,9 +944,10 @@ fn handle_add_task(conn: &Connection, params: &Value) -> Result<Value, String> {
     // Find or create section
     let section_id: i64 = if let Some(name) = section_name {
         // Try to find existing section
+        let escaped = like_escape(name);
         let existing: Option<i64> = conn.query_row(
-                "SELECT id FROM project_sprint_sections WHERE sprint_id = ?1 AND name = ?2 LIMIT 1",
-                rusqlite::params![sprint_id, name],
+                "SELECT id FROM project_sprint_sections WHERE sprint_id = ?1 AND name = ?2 ESCAPE '\\' LIMIT 1",
+                rusqlite::params![sprint_id, escaped],
                 |row| row.get(0),
             )
             .ok();
@@ -948,20 +998,21 @@ fn handle_add_task(conn: &Connection, params: &Value) -> Result<Value, String> {
 
 /// Check off a task by title (partial, case-insensitive match).
 fn handle_check_task(conn: &Connection, params: &Value) -> Result<Value, String> {
-    let project_id = require_scoped_project()?;
+    let project_id = require_project_id(params, conn)?;
     let title = params
         .get("title")
         .and_then(|v| v.as_str())
         .ok_or("title required")?;
 
     // Find the item in the active sprint
-    let pattern = format!("%{}%", title);
+    let escaped = like_escape(title);
+    let pattern = format!("%{}%", escaped);
     let item_id: Result<i64, _> = conn.query_row(
         "SELECT pi.id FROM project_items pi
          JOIN project_sprint_sections pss ON pi.section_id = pss.id
          JOIN project_sprints ps ON pss.sprint_id = ps.id
          WHERE ps.project_id = ?1 AND ps.status = 'active'
-           AND LOWER(pi.title) LIKE LOWER(?2)
+           AND LOWER(pi.title) LIKE LOWER(?2) ESCAPE '\\'
            AND pi.checked = 0
          ORDER BY pi.sort_order LIMIT 1",
         rusqlite::params![project_id, pattern],
@@ -1047,15 +1098,7 @@ fn handle_add_item(conn: &Connection, params: &Value) -> Result<Value, String> {
 
     // Access control
     if let Some(scoped_id) = get_scoped_project() {
-        let project_ok: Result<i64, _> = conn.query_row(
-            "SELECT count(*) FROM project_items pi
-             JOIN project_sprint_sections pss ON pi.section_id = pss.id
-             JOIN project_sprints ps ON pss.sprint_id = ps.id
-             WHERE pss.id = ?1 AND ps.project_id = ?2",
-            [section_id, scoped_id],
-            |row| row.get(0),
-        );
-        // section might not have items yet, check via section->sprint->project
+        // section->sprint->project
         let section_project_ok: Result<i64, _> = conn.query_row(
             "SELECT count(*) FROM project_sprint_sections pss
              JOIN project_sprints ps ON pss.sprint_id = ps.id
@@ -1091,12 +1134,7 @@ fn handle_add_item(conn: &Connection, params: &Value) -> Result<Value, String> {
 }
 
 fn handle_complete_sprint(conn: &Connection, params: &Value) -> Result<Value, String> {
-    let project_id = if let Some(pid) = params.get("project_id").and_then(|v| v.as_i64()) {
-        verify_project_access(pid)?;
-        pid
-    } else {
-        require_scoped_project()?
-    };
+    let project_id = require_project_id(params, conn)?;
 
     let sprint_id: i64 = conn
         .query_row(
@@ -1142,12 +1180,7 @@ fn handle_complete_sprint(conn: &Connection, params: &Value) -> Result<Value, St
 }
 
 fn handle_get_progress(conn: &Connection, params: &Value) -> Result<Value, String> {
-    let project_id = if let Some(pid) = params.get("project_id").and_then(|v| v.as_i64()) {
-        verify_project_access(pid)?;
-        pid
-    } else {
-        require_scoped_project()?
-    };
+    let project_id = require_project_id(params, conn)?;
 
     let (checked, total): (i64, i64) = conn
         .query_row(
@@ -1169,12 +1202,12 @@ fn handle_get_progress(conn: &Connection, params: &Value) -> Result<Value, Strin
 }
 
 fn handle_log_error(conn: &Connection, params: &Value) -> Result<Value, String> {
-    let project_id = require_scoped_project()?;
+    let project_id = require_project_id(params, conn)?;
     let error = params
         .get("error")
         .and_then(|v| v.as_str())
         .ok_or("error required")?;
-    let agent_id = get_agent_id_for_project(project_id);
+    let agent_id = get_global_agent_id();
 
     // Find active sprint
     let sprint_id: i64 = conn
@@ -1224,11 +1257,10 @@ fn handle_log_error(conn: &Connection, params: &Value) -> Result<Value, String> 
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs().to_string())
         .unwrap_or_default();
-    let item_title = format!("[{}] {}", agent_id, error);
 
     conn.execute(
-        "INSERT INTO project_items (section_id, title, description, checked, notes, sort_order, is_custom) VALUES (?1, ?2, ?3, 0, ?4, ?5, 1)",
-        (section_id, &item_title, "Error logged by agent", &timestamp, max_item_order + 1),
+        "INSERT INTO project_items (section_id, title, description, checked, notes, agent_id, sort_order, is_custom) VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, 1)",
+        (section_id, error, "Error logged by agent", &timestamp, &agent_id, max_item_order + 1),
     ).map_err(|e| e.to_string())?;
 
     let item_id = conn.last_insert_rowid();
@@ -1236,8 +1268,8 @@ fn handle_log_error(conn: &Connection, params: &Value) -> Result<Value, String> 
 }
 
 /// List ALL sprints with status, progress, section counts.
-fn handle_get_project_sprints(conn: &Connection) -> Result<Value, String> {
-    let project_id = require_scoped_project()?;
+fn handle_get_project_sprints(conn: &Connection, params: &Value) -> Result<Value, String> {
+    let project_id = require_project_id(params, conn)?;
 
     let mut s_stmt = conn
         .prepare(
@@ -1272,7 +1304,7 @@ fn handle_get_project_sprints(conn: &Connection) -> Result<Value, String> {
 
 /// Get any sprint by number (1-based) or name.
 fn handle_get_sprint(conn: &Connection, params: &Value) -> Result<Value, String> {
-    let project_id = require_scoped_project()?;
+    let project_id = require_project_id(params, conn)?;
 
     let sprint_id: Option<i64> = if let Some(num) = params.get("number").and_then(|v| v.as_i64()) {
         conn.query_row(
@@ -1282,9 +1314,11 @@ fn handle_get_sprint(conn: &Connection, params: &Value) -> Result<Value, String>
         )
         .ok()
     } else if let Some(name) = params.get("name").and_then(|v| v.as_str()) {
+        let escaped = like_escape(name);
+        let pattern = format!("%{}%", escaped);
         conn.query_row(
-            "SELECT id FROM project_sprints WHERE project_id = ?1 AND name LIKE ?2 LIMIT 1",
-            rusqlite::params![project_id, format!("%{}%", name)],
+            "SELECT id FROM project_sprints WHERE project_id = ?1 AND name LIKE ?2 ESCAPE '\\' LIMIT 1",
+            rusqlite::params![project_id, pattern],
             |row| row.get(0),
         )
         .ok()
@@ -1362,7 +1396,7 @@ fn handle_get_sprint(conn: &Connection, params: &Value) -> Result<Value, String>
 
 /// List tasks in active sprint, filtered by status.
 fn handle_get_tasks(conn: &Connection, params: &Value) -> Result<Value, String> {
-    let project_id = require_scoped_project()?;
+    let project_id = require_project_id(params, conn)?;
     let status_filter = params
         .get("status")
         .and_then(|v| v.as_str())
@@ -1383,7 +1417,7 @@ fn handle_get_tasks(conn: &Connection, params: &Value) -> Result<Value, String> 
     };
 
     let mut stmt = match checked_val {
-        Some(cv) => {
+        Some(_) => {
             let query = "SELECT pi.id, pi.title, pi.checked, pss.name as section_name
              FROM project_items pi
              JOIN project_sprint_sections pss ON pi.section_id = pss.id
@@ -1428,24 +1462,26 @@ fn handle_get_tasks(conn: &Connection, params: &Value) -> Result<Value, String> 
         })
         .collect();
 
-    Ok(json!({ "tasks": tasks, "total": tasks.len() }))
+    let total = tasks.len();
+    Ok(json!({ "tasks": tasks, "total": total }))
 }
 
 /// Uncheck a task by title (partial match).
 fn handle_uncheck_task(conn: &Connection, params: &Value) -> Result<Value, String> {
-    let project_id = require_scoped_project()?;
+    let project_id = require_project_id(params, conn)?;
     let title = params
         .get("title")
         .and_then(|v| v.as_str())
         .ok_or("title required")?;
 
-    let pattern = format!("%{}%", title);
+    let escaped = like_escape(title);
+    let pattern = format!("%{}%", escaped);
     let item_id: Result<i64, _> = conn.query_row(
         "SELECT pi.id FROM project_items pi
          JOIN project_sprint_sections pss ON pi.section_id = pss.id
          JOIN project_sprints ps ON pss.sprint_id = ps.id
          WHERE ps.project_id = ?1 AND ps.status = 'active'
-           AND LOWER(pi.title) LIKE LOWER(?2)
+           AND LOWER(pi.title) LIKE LOWER(?2) ESCAPE '\\'
            AND pi.checked = 1
          ORDER BY pi.sort_order LIMIT 1",
         rusqlite::params![project_id, pattern],
@@ -1466,7 +1502,7 @@ fn handle_uncheck_task(conn: &Connection, params: &Value) -> Result<Value, Strin
 
 /// Add a new section to the active sprint.
 fn handle_add_section(conn: &Connection, params: &Value) -> Result<Value, String> {
-    let project_id = require_scoped_project()?;
+    let project_id = require_project_id(params, conn)?;
     let name = params
         .get("name")
         .and_then(|v| v.as_str())
@@ -1504,20 +1540,21 @@ fn handle_add_section(conn: &Connection, params: &Value) -> Result<Value, String
 
 /// Search all tasks in the project by keyword.
 fn handle_search_tasks(conn: &Connection, params: &Value) -> Result<Value, String> {
-    let project_id = require_scoped_project()?;
+    let project_id = require_project_id(params, conn)?;
     let query = params
         .get("query")
         .and_then(|v| v.as_str())
         .ok_or("query required")?;
 
-    let pattern = format!("%{}%", query);
+    let escaped = like_escape(query);
+    let pattern = format!("%{}%", escaped);
     let mut stmt = conn
         .prepare(
             "SELECT pi.id, pi.title, pi.checked, pss.name as section_name, ps.name as sprint_name, ps.status
              FROM project_items pi
              JOIN project_sprint_sections pss ON pi.section_id = pss.id
              JOIN project_sprints ps ON pss.sprint_id = ps.id
-             WHERE ps.project_id = ?1 AND LOWER(pi.title) LIKE LOWER(?2)
+             WHERE ps.project_id = ?1 AND LOWER(pi.title) LIKE LOWER(?2) ESCAPE '\\'
              ORDER BY ps.sort_order, pss.sort_order, pi.sort_order",
         )
         .map_err(|e| e.to_string())?;
@@ -1544,7 +1581,8 @@ fn handle_search_tasks(conn: &Connection, params: &Value) -> Result<Value, Strin
         })
         .collect();
 
-    Ok(json!({ "tasks": tasks, "total": tasks.len() }))
+    let total = tasks.len();
+    Ok(json!({ "tasks": tasks, "total": total }))
 }
 
 // ─── Helpers ───
@@ -1592,12 +1630,6 @@ fn auto_advance_sprint(conn: &Connection, item_id: i64) -> Result<(), String> {
     Ok(())
 }
 
-/// Get agent ID for a project — uses the agent tracking based on client name from initialize.
-fn get_agent_id_for_project(_project_id: i64) -> String {
-    // Use the global agent_id since the MCP process tracks a single client identity
-    get_global_agent_id()
-}
-
 // Global agent ID storage (set during initialize)
 static GLOBAL_AGENT_ID: OnceLock<String> = OnceLock::new();
 
@@ -1621,6 +1653,11 @@ fn main() {
         eprintln!("Make sure the DevStar app has been run at least once.");
         std::process::exit(1);
     }
+
+    let conn = Connection::open(&db_path).expect("Failed to open DB");
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+        .ok();
+    let conn = Mutex::new(conn);
 
     let stdin = io::stdin();
     let stdout = io::stdout();
@@ -1654,28 +1691,7 @@ fn main() {
         };
 
         let is_notification = request.id.is_none();
-
-        let conn = if is_notification {
-            None
-        } else {
-            match Connection::open(&db_path) {
-                Ok(c) => Some(c),
-                Err(e) => {
-                    let resp = JsonRpcResponse {
-                        jsonrpc: "2.0".to_string(),
-                        id: request.id.clone(),
-                        result: None,
-                        error: Some(JsonRpcError {
-                            code: -32603,
-                            message: format!("DB error: {}", e),
-                        }),
-                    };
-                    writeln!(stdout, "{}", serde_json::to_string(&resp).unwrap()).ok();
-                    stdout.flush().ok();
-                    continue;
-                }
-            }
-        };
+        let conn_guard = conn.lock().unwrap_or_else(|e| e.into_inner());
 
         let result = match request.method.as_str() {
             "initialize" => {
@@ -1691,6 +1707,14 @@ fn main() {
                 let agent_id = get_or_create_agent_id(client_name);
                 set_global_agent_id(agent_id.clone());
 
+                // scope session to project if project_uuid is provided
+                let params = request.params.as_ref().cloned().unwrap_or(json!({}));
+                if let Some(uuid) = params.get("project_uuid").and_then(|v| v.as_str()) {
+                    if let Some(pid) = get_project_id_from_uuid(&*conn_guard, uuid) {
+                        set_active_project(pid);
+                    }
+                }
+
                 Ok(json!({
                     "protocolVersion": "2024-11-05",
                     "capabilities": { "tools": {} },
@@ -1701,12 +1725,12 @@ fn main() {
             "initialized" => Ok(null_value()),
             "tools/list" => Ok(json!({ "tools": tool_definitions() })),
             "tools/call" => {
-                let conn_ref = conn.as_ref().unwrap();
+                let conn_ref = &*conn_guard;
                 let params = request.params.as_ref().unwrap();
                 let tool = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let tool_params = params.get("arguments").cloned().unwrap_or(json!({}));
 
-                match tool {
+                let tool_result = match tool {
                     "list_templates" => handle_list_templates(conn_ref),
                     "get_template" => handle_get_template(conn_ref, &tool_params),
                     "list_shared_sections" => handle_list_shared_sections(conn_ref),
@@ -1722,17 +1746,37 @@ fn main() {
                     "complete_sprint" => handle_complete_sprint(conn_ref, &tool_params),
                     "get_progress" => handle_get_progress(conn_ref, &tool_params),
                     "log_error" => handle_log_error(conn_ref, &tool_params),
-                    "get_project_sprints" => handle_get_project_sprints(conn_ref),
+                    "get_project_sprints" => handle_get_project_sprints(conn_ref, &tool_params),
                     "get_sprint" => handle_get_sprint(conn_ref, &tool_params),
                     "get_tasks" => handle_get_tasks(conn_ref, &tool_params),
                     "uncheck_task" => handle_uncheck_task(conn_ref, &tool_params),
                     "add_section" => handle_add_section(conn_ref, &tool_params),
                     "search_tasks" => handle_search_tasks(conn_ref, &tool_params),
                     _ => Err(format!("Unknown tool: {}", tool)),
+                };
+
+                // Wrap in MCP-compliant content envelope
+                match tool_result {
+                    Ok(v) => Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": serde_json::to_string(&v).unwrap_or_default()
+                        }],
+                        "isError": false
+                    })),
+                    Err(e) => Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": e
+                        }],
+                        "isError": true
+                    })),
                 }
             }
             _ => Ok(null_value()),
         };
+
+        drop(conn_guard);
 
         if is_notification {
             continue;

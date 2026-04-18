@@ -33,3 +33,4 @@ uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.52"
+winapi = { version = "0.3", features = ["winuser", "windef"] }

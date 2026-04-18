@@ -360,6 +360,7 @@ fn get_items(conn: &Connection, section_id: i64) -> Result<Vec<ProjectItem>, App
                 description: row.get(3)?,
                 checked: row.get::<_, i64>(4)? != 0,
                 notes: row.get(5)?,
+                agent_id: None,
                 sort_order: row.get(6)?,
                 is_custom: row.get::<_, i64>(7)? != 0,
             })
@@ -398,6 +399,7 @@ fn get_item_internal(conn: &Connection, id: i64) -> Option<ProjectItem> {
             description: row.get(3)?,
             checked: row.get::<_, i64>(4)? != 0,
             notes: row.get(5)?,
+            agent_id: None,
             sort_order: row.get(6)?,
             is_custom: row.get::<_, i64>(7)? != 0,
         })

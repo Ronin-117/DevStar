@@ -16,7 +16,7 @@ pub fn seed(
     let docs = section_map.get("docs").copied().unwrap_or(0);
     let quality = section_map.get("quality").copied().unwrap_or(0);
     let performance = section_map.get("performance").copied().unwrap_or(0);
-    let monitoring = section_map.get("monitoring").copied().unwrap_or(0);
+    let _monitoring = section_map.get("monitoring").copied().unwrap_or(0);
 
     let tpl = add_template(
         conn,

@@ -14,10 +14,12 @@ pub fn seed(
     let testing = section_map.get("testing").copied().unwrap_or(0);
     let cicd = section_map.get("cicd").copied().unwrap_or(0);
     let docs = section_map.get("docs").copied().unwrap_or(0);
-    let quality = section_map.get("quality").copied().unwrap_or(0);
-    let performance = section_map.get("performance").copied().unwrap_or(0);
     let monitoring = section_map.get("monitoring").copied().unwrap_or(0);
-    let database = section_map.get("database").copied().unwrap_or(0);
+    let quality = section_map.get("quality").copied().unwrap_or(0);
+    let _performance = section_map.get("performance").copied().unwrap_or(0);
+    let _docs = section_map.get("docs").copied().unwrap_or(0);
+    let _database = section_map.get("database").copied().unwrap_or(0);
+
 
     let tpl = add_template(
         conn,

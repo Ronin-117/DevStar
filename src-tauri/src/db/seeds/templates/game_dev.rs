@@ -14,16 +14,18 @@ pub fn seed(
     let testing = section_map.get("testing").copied().unwrap_or(0);
     let cicd = section_map.get("cicd").copied().unwrap_or(0);
     let docs = section_map.get("docs").copied().unwrap_or(0);
-    let quality = section_map.get("quality").copied().unwrap_or(0);
+    let _quality = section_map.get("quality").copied().unwrap_or(0);
     let performance = section_map.get("performance").copied().unwrap_or(0);
     let monitoring = section_map.get("monitoring").copied().unwrap_or(0);
+    let _quality = section_map.get("quality").copied().unwrap_or(0);
 
-    let planning_setup = sprint_map.get("planning_setup").copied().unwrap_or(0);
-    let security_quality = sprint_map.get("security_quality").copied().unwrap_or(0);
-    let testing_qa = sprint_map.get("testing_qa").copied().unwrap_or(0);
-    let cicd_deploy = sprint_map.get("cicd_deploy").copied().unwrap_or(0);
-    let monitoring_ops = sprint_map.get("monitoring_ops").copied().unwrap_or(0);
-    let perf_sprint = sprint_map.get("performance").copied().unwrap_or(0);
+    let _planning_setup = sprint_map.get("planning_setup").copied().unwrap_or(0);
+    let _security_quality = sprint_map.get("security_quality").copied().unwrap_or(0);
+    let _testing_qa = sprint_map.get("testing_qa").copied().unwrap_or(0);
+    let _cicd_deploy = sprint_map.get("cicd_deploy").copied().unwrap_or(0);
+    let _monitoring_ops = sprint_map.get("monitoring_ops").copied().unwrap_or(0);
+    let _perf_sprint = sprint_map.get("performance").copied().unwrap_or(0);
+
 
     // === Game Development ===
     let tpl = add_template(

@@ -23,9 +23,10 @@ interface AppState {
   sharedSprintDetail: Map<number, SharedSprintWithSections>;
   projectProgressMap: Map<number, [number, number]>;
   currentSprintMap: Map<number, string>;
+  settings: api.Settings | null;
 
   // UI
-  view: 'projects' | 'library' | 'template-editor';
+  view: 'projects' | 'library' | 'template-editor' | 'settings';
   libraryTab: LibraryTab;
   selectedProjectId: number | null;
   selectedTemplateId: number | null;
@@ -40,6 +41,8 @@ interface AppState {
   fetchSharedSections: () => Promise<void>;
   fetchSharedSprints: () => Promise<void>;
   fetchTemplateSprints: (templateId: number) => Promise<void>;
+  fetchSettings: () => Promise<void>;
+  updateSettings: (settings: api.Settings) => Promise<void>;
 
   // Actions - shared sections
   createSharedSection: (input: { name: string; description?: string; color?: string }) => Promise<void>;
@@ -90,6 +93,7 @@ export const useStore = create<AppState>((set, get) => ({
   sharedSprintDetail: new Map(),
   projectProgressMap: new Map(),
   currentSprintMap: new Map(),
+  settings: null,
   view: 'projects',
   libraryTab: 'templates',
   selectedProjectId: null,
@@ -191,6 +195,23 @@ export const useStore = create<AppState>((set, get) => ({
         } catch { /* skip */ }
       }
       set({ templateSprints: new Map(get().templateSprints).set(templateId, details) });
+    } catch (e: unknown) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  fetchSettings: async () => {
+    try {
+      set({ settings: await api.apiGetSettings() });
+    } catch (e: unknown) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  updateSettings: async (settings) => {
+    try {
+      await api.apiUpdateSettings(settings);
+      set({ settings });
     } catch (e: unknown) {
       set({ error: (e as Error).message });
     }

@@ -213,3 +213,15 @@ export async function apiSetActiveWindowCompact(): Promise<void> {
 export async function apiSetActiveWindowFull(): Promise<void> {
   return invoke<void>('set_active_window_full');
 }
+
+export interface Settings {
+  mcp_enabled: boolean;
+}
+
+export async function apiGetSettings(): Promise<Settings> {
+  return invoke<Settings>('get_settings');
+}
+
+export async function apiUpdateSettings(newSettings: Settings): Promise<void> {
+  return invoke<void>('update_settings', { newSettings });
+}

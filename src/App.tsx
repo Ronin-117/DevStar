@@ -10,6 +10,7 @@ import { SharedSectionsView } from './components/templates/SharedSectionsView';
 import { SharedSprintsView } from './components/templates/SharedSprintsView';
 import { TemplateEditorView } from './components/templates/TemplateEditorView';
 import { ActiveMode } from './components/active/ActiveMode';
+import { SettingsView } from './components/SettingsView';
 import logoBar from './assets/logo-bar.png';
 
 const libraryTabs: { key: LibraryTab; label: string }[] = [
@@ -28,6 +29,7 @@ function App() {
   const fetchTemplates = useStore((s) => s.fetchTemplates);
   const fetchProjects = useStore((s) => s.fetchProjects);
   const fetchProjectDetail = useStore((s) => s.fetchProjectDetail);
+  const fetchSettings = useStore((s) => s.fetchSettings);
   const error = useStore((s) => s.error);
   const clearError = useStore((s) => s.clearError);
   const [windowLabel, setWindowLabel] = useState('management');
@@ -45,6 +47,17 @@ function App() {
   useEffect(() => {
     fetchTemplates();
     fetchProjects();
+    fetchSettings();
+
+    // Restore last-selected project
+    const savedId = localStorage.getItem('pt_active_project_id');
+    if (savedId) {
+      const id = parseInt(savedId, 10);
+      if (!isNaN(id)) {
+        useStore.getState().setSelectedProjectId(id);
+        fetchProjectDetail(id, true);
+      }
+    }
 
     // Poll every 3 seconds so changes made by MCP agents appear live in the UI.
     // Also refreshes the selected project detail so the main window sees live updates.
@@ -57,7 +70,7 @@ function App() {
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [fetchTemplates, fetchProjects, fetchProjectDetail]);
+  }, [fetchTemplates, fetchProjects, fetchProjectDetail, fetchSettings]);
 
   if (windowLabel === 'active') {
     return <ActiveMode />;
@@ -111,6 +124,19 @@ function App() {
             >
               Library
             </button>
+            <button
+              onClick={() => {
+                setView('settings');
+                useStore.getState().setEditingProjectId(null);
+                useStore.getState().setSelectedTemplateId(null);
+              }}
+              className={`px-3 py-1.5 text-sm rounded-md transition-colors ${view === 'settings'
+                  ? 'bg-white text-gray-800 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700'
+                }`}
+            >
+              Settings
+            </button>
           </nav>
         </div>
       </header>
@@ -146,6 +172,8 @@ function App() {
           <ProjectDetailView />
         ) : showTemplateEditor ? (
           <TemplateEditorView />
+        ) : view === 'settings' ? (
+          <SettingsView />
         ) : isInLibrary ? (
           renderLibraryContent()
         ) : (

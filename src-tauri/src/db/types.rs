@@ -134,6 +134,7 @@ pub struct ProjectItem {
     pub description: String,
     pub checked: bool,
     pub notes: String,
+    pub agent_id: Option<String>,
     pub sort_order: i64,
     pub is_custom: bool,
 }
@@ -288,6 +289,26 @@ impl Database {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
         conn.execute_batch(include_str!("schema.sql"))?;
+        
+        // Migration: add uuid column to projects table if it doesn't exist
+        let _ = conn.execute(
+            "ALTER TABLE projects ADD COLUMN uuid TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        
+        // Migration: backfill uuid for existing projects
+        let _ = conn.execute(
+            "UPDATE projects SET uuid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))) WHERE uuid = ''",
+            [],
+        );
+        
+        // Migration: Ensure projects uuid is unique and indexed
+        let _ = conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_uuid ON projects(uuid)", []);
+
+        // Migration: Add agent_id to project_items if missing
+        let _ = conn.execute("ALTER TABLE project_items ADD COLUMN agent_id TEXT", []);
+
+
         Ok(Database {
             conn: Mutex::new(conn),
         })

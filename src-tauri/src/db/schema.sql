@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS template_sprint_sections (
 -- Projects
 CREATE TABLE IF NOT EXISTS projects (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid        TEXT    NOT NULL UNIQUE DEFAULT '',
     name        TEXT    NOT NULL,
     description TEXT    NOT NULL DEFAULT '',
     template_id INTEGER NOT NULL,
@@ -71,6 +72,8 @@ CREATE TABLE IF NOT EXISTS projects (
     created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_uuid ON projects(uuid);
 
 -- Project sprints
 CREATE TABLE IF NOT EXISTS project_sprints (
@@ -102,6 +105,7 @@ CREATE TABLE IF NOT EXISTS project_items (
     description TEXT    NOT NULL DEFAULT '',
     checked     INTEGER NOT NULL DEFAULT 0,
     notes       TEXT    NOT NULL DEFAULT '',
+    agent_id    TEXT,
     sort_order  INTEGER NOT NULL DEFAULT 0,
     is_custom   INTEGER NOT NULL DEFAULT 0
 );

@@ -1,6 +1,7 @@
 {
-  "created_at": 1776078124,
-  "project_id": 11,
+  "project_id": 1,
+  "project_uuid": "69e5886f-3aa4-47bf-a10c-97dc62806cd6",
   "project_name": "DevStar Desktop App",
-  "template_id": 63
+  "template_id": 1,
+  "created_at": 1776321200
 }

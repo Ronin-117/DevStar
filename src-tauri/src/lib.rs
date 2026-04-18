@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-#![allow(unused_variables)]
 #![allow(clippy::let_underscore_future)]
 #![allow(clippy::unnecessary_cast)]
 
@@ -14,8 +12,8 @@ use tauri::Manager;
 use tauri::tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 
-/// On first run, add the install directory to the user's PATH so
-/// `devstar-mcp` can be found from any working directory.
+/// On every launch, ensure the install directory is in the user's PATH.
+/// Removes any stale/incorrect DevStar paths and adds the correct one.
 fn ensure_path() {
     #[cfg(target_os = "windows")]
     {
@@ -26,35 +24,109 @@ fn ensure_path() {
         let current_exe = env::current_exe().ok();
         let install_dir = match current_exe.and_then(|p| p.parent().map(|d| d.to_path_buf())) {
             Some(d) => d,
-            None => return,
-        };
-        let install_dir_str = install_dir.to_string_lossy().to_string();
-
-        // Check if already in PATH
-        if let Ok(path) = env::var("PATH") {
-            if path.split(';').any(|p| p.eq_ignore_ascii_case(&install_dir_str)) {
+            None => {
+                eprintln!("[ensure_path] Could not determine install directory");
                 return;
             }
-        }
+        };
+        let install_dir_str = install_dir.to_string_lossy().to_string();
+        eprintln!("[ensure_path] Install dir: {}", install_dir_str);
 
-        // Read current user PATH from registry and append our dir
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        if let Ok(env_key) = hkcu.open_subkey("Environment") {
-            if let Ok(current_path) = env_key.get_value::<String, _>("PATH") {
-                if !current_path.split(';').any(|p| p.eq_ignore_ascii_case(&install_dir_str)) {
-                    let new_path = format!("{};{}", current_path, install_dir_str);
-                    let _ = env_key.set_value("PATH", &new_path);
+        let env_key = match hkcu.open_subkey_with_flags("Environment", winreg::enums::KEY_READ | winreg::enums::KEY_WRITE) {
+            Ok(k) => k,
+            Err(e) => {
+                eprintln!("[ensure_path] Failed to open Environment key: {}", e);
+                return;
+            }
+        };
+
+        let current_path = match env_key.get_value::<String, _>("PATH") {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[ensure_path] Failed to read PATH: {}", e);
+                return;
+            }
+        };
+        eprintln!("[ensure_path] Current PATH length: {}", current_path.len());
+
+        // Remove any existing DevStar paths and add the correct one
+        let parts: Vec<&str> = current_path.split(';').collect();
+        let mut new_parts: Vec<String> = parts
+            .iter()
+            .filter(|p| {
+                let lower = p.to_lowercase();
+                // Remove any path that contains "devstar" (old/incorrect entries)
+                !lower.contains("devstar")
+            })
+            .map(|s| s.to_string())
+            .collect();
+
+        // Add the correct install directory if not already present
+        let is_dev_path = install_dir_str.to_lowercase().contains("target");
+        let already_present = new_parts.iter().any(|p| p.eq_ignore_ascii_case(&install_dir_str));
+        
+        if !is_dev_path && !already_present {
+            new_parts.push(install_dir_str.clone());
+            let new_path = new_parts.join(";");
+            eprintln!("[ensure_path] Adding {} to PATH", install_dir_str);
+            match env_key.set_value("PATH", &new_path) {
+                Ok(_) => {
+                    eprintln!("[ensure_path] Successfully wrote new PATH ({} chars)", new_path.len());
+                    // Broadcast change
+                    unsafe {
+                        use std::ffi::OsStr;
+                        use std::os::windows::ffi::OsStrExt;
+                        use winapi::um::winuser::{SendMessageTimeoutW, HWND_BROADCAST, WM_SETTINGCHANGE, SMTO_ABORTIFHUNG};
+                        use winapi::shared::windef::HWND;
+                        
+                        let env_w: Vec<u16> = OsStr::new("Environment")
+                            .encode_wide()
+                            .chain(Some(0))
+                            .collect();
+
+                        let result = SendMessageTimeoutW(
+                            HWND_BROADCAST as HWND,
+                            WM_SETTINGCHANGE,
+                            0,
+                            env_w.as_ptr() as isize,
+                            SMTO_ABORTIFHUNG,
+                            1000,
+                            std::ptr::null_mut(),
+                        );
+                        eprintln!("[ensure_path] WM_SETTINGCHANGE broadcast result: {}", result);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[ensure_path] Failed to write PATH: {}", e);
                 }
             }
+        } else if is_dev_path {
+            eprintln!("[ensure_path] Skipping dev path: {}", install_dir_str);
+        } else {
+            eprintln!("[ensure_path] PATH already contains correct DevStar entry");
         }
     }
-    // Non-Windows platforms: PATH is typically managed via shell profiles or package managers
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct Settings {
+    pub mcp_enabled: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            mcp_enabled: true,
+        }
+    }
 }
 
 struct AppState {
     db: Database,
     rate_limiter: RateLimiter,
     mcp_process: Mutex<Option<std::process::Child>>,
+    settings: Mutex<Settings>,
 }
 
 fn check_rate_limit(state: &tauri::State<AppState>, window_label: &str) -> Result<(), String> {
@@ -72,7 +144,7 @@ async fn list_templates(
     window: tauri::Window,
 ) -> Result<Vec<Template>, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::templates::list(&conn).map_err(|e| e.to_string())
 }
 
@@ -83,7 +155,7 @@ async fn create_template(
     input: TemplateInput,
 ) -> Result<Template, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::templates::create(&conn, input).map_err(|e| e.to_string())
 }
 
@@ -97,7 +169,7 @@ async fn update_template(
     color: Option<String>,
 ) -> Result<Template, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::templates::update(&conn, id, name, description, color).map_err(|e| e.to_string())
 }
 
@@ -108,7 +180,7 @@ async fn delete_template(
     id: i64,
 ) -> Result<(), String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::templates::delete(&conn, id).map_err(|e| e.to_string())
 }
 
@@ -121,7 +193,7 @@ async fn list_template_sprints(
     template_id: i64,
 ) -> Result<Vec<TemplateSprint>, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::template_sprints::list(&conn, template_id).map_err(|e| e.to_string())
 }
 
@@ -132,7 +204,7 @@ async fn get_template_sprint_with_sections(
     sprint_id: i64,
 ) -> Result<TemplateSprintWithSections, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::template_sprints::get_with_sections(&conn, sprint_id).map_err(|e| e.to_string())
 }
 
@@ -145,7 +217,7 @@ async fn add_template_sprint(
     description: String,
 ) -> Result<TemplateSprint, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::template_sprints::add(&conn, template_id, name, description).map_err(|e| e.to_string())
 }
 
@@ -158,7 +230,7 @@ async fn update_template_sprint(
     description: Option<String>,
 ) -> Result<TemplateSprint, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::template_sprints::update(&conn, id, name, description).map_err(|e| e.to_string())
 }
 
@@ -169,7 +241,7 @@ async fn delete_template_sprint(
     id: i64,
 ) -> Result<(), String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::template_sprints::delete(&conn, id).map_err(|e| e.to_string())
 }
 
@@ -182,7 +254,7 @@ async fn add_template_sprint_section(
     is_linked: bool,
 ) -> Result<TemplateSprintSection, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::template_sprints::add_section(&conn, sprint_id, section_id, is_linked).map_err(|e| e.to_string())
 }
 
@@ -193,7 +265,7 @@ async fn delete_template_sprint_section(
     id: i64,
 ) -> Result<(), String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::template_sprints::delete_section(&conn, id).map_err(|e| e.to_string())
 }
 
@@ -205,7 +277,7 @@ async fn list_shared_sections(
     window: tauri::Window,
 ) -> Result<Vec<SharedSection>, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::shared_sections::list(&conn).map_err(|e| e.to_string())
 }
 
@@ -216,7 +288,7 @@ async fn get_shared_section_with_items(
     section_id: i64,
 ) -> Result<SectionWithItems, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::shared_sections::get_with_items(&conn, section_id).map_err(|e| e.to_string())
 }
 
@@ -227,7 +299,7 @@ async fn create_shared_section(
     input: SharedSectionInput,
 ) -> Result<SharedSection, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::shared_sections::create(&conn, input).map_err(|e| e.to_string())
 }
 
@@ -241,7 +313,7 @@ async fn update_shared_section(
     color: Option<String>,
 ) -> Result<SharedSection, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::shared_sections::update(&conn, id, name, description, color).map_err(|e| e.to_string())
 }
 
@@ -252,7 +324,7 @@ async fn delete_shared_section(
     id: i64,
 ) -> Result<(), String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::shared_sections::delete(&conn, id).map_err(|e| e.to_string())
 }
 
@@ -263,7 +335,7 @@ async fn add_shared_section_item(
     input: SharedSectionItemInput,
 ) -> Result<SharedSectionItem, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::shared_sections::add_item(&conn, input).map_err(|e| e.to_string())
 }
 
@@ -276,7 +348,7 @@ async fn update_shared_section_item(
     description: Option<String>,
 ) -> Result<SharedSectionItem, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::shared_sections::update_item(&conn, id, title, description).map_err(|e| e.to_string())
 }
 
@@ -287,7 +359,7 @@ async fn delete_shared_section_item(
     id: i64,
 ) -> Result<(), String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::shared_sections::delete_item(&conn, id).map_err(|e| e.to_string())
 }
 
@@ -299,7 +371,7 @@ async fn list_shared_sprints(
     window: tauri::Window,
 ) -> Result<Vec<SharedSprint>, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::shared_sprints::list(&conn).map_err(|e| e.to_string())
 }
 
@@ -310,7 +382,7 @@ async fn get_shared_sprint_with_sections(
     sprint_id: i64,
 ) -> Result<SharedSprintWithSections, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::shared_sprints::get_with_sections(&conn, sprint_id).map_err(|e| e.to_string())
 }
 
@@ -321,7 +393,7 @@ async fn create_shared_sprint(
     input: SharedSprintInput,
 ) -> Result<SharedSprint, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::shared_sprints::create(&conn, input).map_err(|e| e.to_string())
 }
 
@@ -334,7 +406,7 @@ async fn update_shared_sprint(
     description: Option<String>,
 ) -> Result<SharedSprint, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::shared_sprints::update(&conn, id, name, description).map_err(|e| e.to_string())
 }
 
@@ -345,7 +417,7 @@ async fn delete_shared_sprint(
     id: i64,
 ) -> Result<(), String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::shared_sprints::delete(&conn, id).map_err(|e| e.to_string())
 }
 
@@ -356,7 +428,7 @@ async fn add_shared_sprint_section(
     input: SharedSprintSectionInput,
 ) -> Result<SharedSprintSection, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::shared_sprints::add_section(&conn, input).map_err(|e| e.to_string())
 }
 
@@ -367,7 +439,7 @@ async fn delete_shared_sprint_section(
     id: i64,
 ) -> Result<(), String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::shared_sprints::delete_section(&conn, id).map_err(|e| e.to_string())
 }
 
@@ -379,7 +451,7 @@ async fn list_projects(
     window: tauri::Window,
 ) -> Result<Vec<Project>, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::projects::list(&conn).map_err(|e| e.to_string())
 }
 
@@ -390,7 +462,7 @@ async fn create_project_from_template(
     input: ProjectInput,
 ) -> Result<Project, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::projects::create_from_template(&conn, input).map_err(|e| e.to_string())
 }
 
@@ -401,7 +473,7 @@ async fn delete_project(
     id: i64,
 ) -> Result<(), String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::projects::delete(&conn, id).map_err(|e| e.to_string())
 }
 
@@ -414,7 +486,7 @@ async fn list_project_sprints(
     project_id: i64,
 ) -> Result<Vec<ProjectSprintWithSections>, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::project_sprints::list_with_sections(&conn, project_id).map_err(|e| e.to_string())
 }
 
@@ -426,7 +498,10 @@ async fn set_sprint_status(
     status: String,
 ) -> Result<(), String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    if !["pending", "active", "done"].contains(&status.as_str()) {
+        return Err(format!("Invalid status '{}'. Must be: pending, active, or done", status));
+    }
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::project_sprints::set_status(&conn, sprint_id, status).map_err(|e| e.to_string())
 }
 
@@ -437,7 +512,7 @@ async fn get_active_sprint(
     project_id: i64,
 ) -> Result<Option<ProjectSprint>, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::project_sprints::get_active(&conn, project_id).map_err(|e| e.to_string())
 }
 
@@ -448,7 +523,7 @@ async fn get_project_progress(
     project_id: i64,
 ) -> Result<(i64, i64), String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::project_sprints::get_progress(&conn, project_id).map_err(|e| e.to_string())
 }
 
@@ -459,7 +534,7 @@ async fn update_project_item(
     input: ProjectItemUpdate,
 ) -> Result<ProjectItem, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::project_sprints::update_item(&conn, input).map_err(|e| e.to_string())
 }
 
@@ -470,7 +545,7 @@ async fn toggle_project_item(
     id: i64,
 ) -> Result<ProjectItem, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::project_sprints::toggle_item(&conn, id).map_err(|e| e.to_string())
 }
 
@@ -481,7 +556,7 @@ async fn check_and_advance_sprint(
     project_id: i64,
 ) -> Result<Option<ProjectSprint>, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::project_sprints::check_and_advance_sprint(&conn, project_id).map_err(|e| e.to_string())
 }
 
@@ -493,7 +568,7 @@ async fn complete_sprint(
     project_id: i64,
 ) -> Result<Option<ProjectSprint>, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     // Mark all items in this sprint as checked
     db::project_sprints::complete_all_items(&conn, sprint_id).map_err(|e| e.to_string())?;
     // Mark sprint as done and advance to next
@@ -507,7 +582,7 @@ async fn add_project_section(
     input: ProjectSectionInput,
 ) -> Result<ProjectSprintSection, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::project_sprints::add_section(&conn, input).map_err(|e| e.to_string())
 }
 
@@ -518,7 +593,7 @@ async fn add_project_item(
     input: ProjectItemInput,
 ) -> Result<ProjectItem, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::project_sprints::add_item(&conn, input).map_err(|e| e.to_string())
 }
 
@@ -529,7 +604,7 @@ async fn delete_project_item(
     id: i64,
 ) -> Result<(), String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::project_sprints::delete_item(&conn, id).map_err(|e| e.to_string())
 }
 
@@ -540,7 +615,7 @@ async fn delete_project_section(
     id: i64,
 ) -> Result<(), String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::project_sprints::delete_section(&conn, id).map_err(|e| e.to_string())
 }
 
@@ -553,7 +628,7 @@ async fn add_project_sprint(
     description: String,
 ) -> Result<ProjectSprint, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::project_sprints::add_sprint(&conn, project_id, &name, &description).map_err(|e| e.to_string())
 }
 
@@ -566,7 +641,7 @@ async fn add_shared_sprint_to_project(
     is_linked: bool,
 ) -> Result<ProjectSprint, String> {
     check_rate_limit(&state, window.label())?;
-    let conn = state.db.conn.lock().unwrap();
+    let conn = state.db.conn.lock().unwrap_or_else(|e| e.into_inner());
     db::project_sprints::add_shared_sprint_to_project(&conn, project_id, shared_sprint_id, is_linked)
         .map_err(|e| e.to_string())
 }
@@ -789,6 +864,15 @@ pub fn run() {
     }
     let rate_limiter = RateLimiter::new(30.0, 5.0);
 
+    // Load settings
+    let settings_path = app_data_dir.join("settings.json");
+    let settings = if settings_path.exists() {
+        let content = std::fs::read_to_string(&settings_path).unwrap_or_default();
+        serde_json::from_str(&content).unwrap_or_default()
+    } else {
+        Settings::default()
+    };
+
     // Ensure install dir is in PATH (first run only — checks before writing)
     ensure_path();
 
@@ -798,10 +882,15 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
-        .manage(AppState { db, rate_limiter, mcp_process: Mutex::new(None) })
+        .manage(AppState { 
+            db, 
+            rate_limiter, 
+            mcp_process: Mutex::new(None),
+            settings: Mutex::new(settings),
+        })
         .setup(|app| {
             // Spawn MCP server as background process
-            spawn_mcp_server(app.handle())?;
+            let _ = spawn_mcp_server(app.handle().clone());
 
             // Create system tray with menu
             let handle = app.handle();
@@ -910,6 +999,8 @@ pub fn run() {
             toggle_maximize_window,
             set_active_window_compact,
             set_active_window_full,
+            get_settings,
+            update_settings,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -925,12 +1016,67 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
+#[tauri::command]
+async fn get_settings(state: tauri::State<'_, AppState>) -> Result<Settings, String> {
+    let settings = state.settings.lock().unwrap_or_else(|e| e.into_inner());
+    Ok(settings.clone())
+}
+
+#[tauri::command]
+async fn update_settings(
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+    new_settings: Settings,
+) -> Result<(), String> {
+    let mut settings = state.settings.lock().unwrap_or_else(|e| e.into_inner());
+    let old_enabled = settings.mcp_enabled;
+    *settings = new_settings.clone();
+
+    // Save to disk (BUG-09: unify settings path with run() loading)
+    let app_data_dir = app.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let settings_path = app_data_dir.join("settings.json");
+    let _ = std::fs::create_dir_all(&app_data_dir);
+    let _ = std::fs::write(settings_path, serde_json::to_string(&new_settings).unwrap_or_default());
+
+    // Restart or stop MCP server if toggle changed
+    if old_enabled != new_settings.mcp_enabled {
+        if new_settings.mcp_enabled {
+            let _ = spawn_mcp_server(app);
+        } else {
+            let mut proc_lock = state.mcp_process.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(mut child) = proc_lock.take() {
+                let _ = child.kill();
+                eprintln!("[MCP] Server stopped by user setting");
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Spawn the MCP server as a background child process
-fn spawn_mcp_server(app: &tauri::AppHandle) -> Result<(), String> {
+fn spawn_mcp_server(app: tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    {
+        let settings = state.settings.lock().unwrap_or_else(|e| e.into_inner());
+        if !settings.mcp_enabled {
+            eprintln!("[MCP] Server disabled by user setting");
+            return Ok(());
+        }
+    }
+
+    let mut proc_lock = state.mcp_process.lock().unwrap_or_else(|e| e.into_inner());
+    if proc_lock.is_some() {
+        return Ok(()); // Already running
+    }
+
     let exe_path = std::env::current_exe()
         .map_err(|e| format!("Failed to get exe path: {}", e))?;
     let exe_dir = exe_path.parent()
         .ok_or("Failed to get exe directory")?;
+    
+    // In dev, look in target/debug
+    // In release, look in same dir
     let mcp_path = exe_dir.join("devstar-mcp.exe");
 
     if !mcp_path.exists() {
@@ -952,8 +1098,6 @@ fn spawn_mcp_server(app: &tauri::AppHandle) -> Result<(), String> {
         match mcp {
             Ok(child) => {
                 eprintln!("[MCP] Server spawned with PID: {}", child.id());
-                let state = app.state::<AppState>();
-                let mut proc_lock = state.mcp_process.lock().unwrap();
                 *proc_lock = Some(child);
             }
             Err(e) => {
@@ -973,8 +1117,6 @@ fn spawn_mcp_server(app: &tauri::AppHandle) -> Result<(), String> {
         match mcp {
             Ok(child) => {
                 eprintln!("[MCP] Server spawned with PID: {}", child.id());
-                let state = app.state::<AppState>();
-                let mut proc_lock = state.mcp_process.lock().unwrap();
                 *proc_lock = Some(child);
             }
             Err(e) => {

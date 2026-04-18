@@ -19,12 +19,12 @@ pub fn seed(
     let monitoring = section_map.get("monitoring").copied().unwrap_or(0);
     let database = section_map.get("database").copied().unwrap_or(0);
 
-    let planning_setup = sprint_map.get("planning_setup").copied().unwrap_or(0);
-    let security_quality = sprint_map.get("security_quality").copied().unwrap_or(0);
-    let testing_qa = sprint_map.get("testing_qa").copied().unwrap_or(0);
-    let cicd_deploy = sprint_map.get("cicd_deploy").copied().unwrap_or(0);
-    let monitoring_ops = sprint_map.get("monitoring_ops").copied().unwrap_or(0);
-    let perf_sprint = sprint_map.get("performance").copied().unwrap_or(0);
+    let _planning_setup = sprint_map.get("planning_setup").copied().unwrap_or(0);
+    let _security_quality = sprint_map.get("security_quality").copied().unwrap_or(0);
+    let _testing_qa = sprint_map.get("testing_qa").copied().unwrap_or(0);
+    let _cicd_deploy = sprint_map.get("cicd_deploy").copied().unwrap_or(0);
+    let _monitoring_ops = sprint_map.get("monitoring_ops").copied().unwrap_or(0);
+    let _perf_sprint = sprint_map.get("performance").copied().unwrap_or(0);
 
     // === Desktop Application Development ===
     let tpl = add_template(
