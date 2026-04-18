@@ -399,13 +399,23 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "get_template",
-            "description": "Get a template's structure: its sprints (name, description, sort_order, section count). Use this to understand what a template includes before creating a project from it. Requires template_id from list_templates.",
+            "description": "Get a template's FULL structure: every sprint, every section inside each sprint, and every checklist item inside each section. Use this BEFORE creating a project to fully understand what the template provides, so you can choose the right template and know exactly which sprints and sections already exist — avoiding duplication when you add project-specific tasks later.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "template_id": { "type": "integer", "description": "Template ID from list_templates response." }
                 },
                 "required": ["template_id"]
+            }
+        },
+        {
+            "name": "get_full_project_plan",
+            "description": "Get the COMPLETE project plan: every sprint (pending/active/done) with every section and every task item inside each section, plus checked status. Use this at the start of a planning or implementation session to understand the full current state of the project before making any changes. This is the single best tool to call after initialize — it gives you the entire tree so you know exactly where to add tasks, which sections already exist in which sprints, and what is already done.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project_id": { "type": "integer", "description": "Project ID. Optional if session is scoped via initialize or .devstar.json exists." }
+                }
             }
         },
         {
@@ -476,29 +486,176 @@ fn handle_get_template(conn: &Connection, params: &Value) -> Result<Value, Strin
         })
         .map_err(|e| e.to_string())?;
 
+    // Load every sprint with its full section+item tree
     let mut s_stmt = conn
         .prepare(
-            "SELECT ts.id, ts.name, ts.description, ts.sort_order,
-                    (SELECT count(*) FROM template_sprint_sections tss WHERE tss.sprint_id = ts.id)
+            "SELECT ts.id, ts.name, ts.description, ts.sort_order
              FROM template_sprints ts WHERE ts.template_id = ?1 ORDER BY ts.sort_order",
         )
         .map_err(|e| e.to_string())?;
 
-    let sprints: Vec<Value> = s_stmt
+    let sprint_rows: Vec<(i64, String, String, i64)> = s_stmt
         .query_map([template_id], |row| {
-            Ok(json!({
-                "id": row.get::<_, i64>(0)?,
-                "name": row.get::<_, String>(1)?,
-                "description": row.get::<_, String>(2)?,
-                "sort_order": row.get::<_, i64>(3)?,
-                "sections": row.get::<_, i64>(4)?,
-            }))
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
 
+    let mut sprints = Vec::new();
+    for (ts_id, ts_name, ts_desc, ts_order) in sprint_rows {
+        // Load sections for this sprint
+        let mut sec_stmt = conn
+            .prepare(
+                "SELECT ss.id, ss.name, ss.description, tss.sort_order
+                 FROM template_sprint_sections tss
+                 JOIN shared_sections ss ON tss.section_id = ss.id
+                 WHERE tss.sprint_id = ?1 ORDER BY tss.sort_order",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let sec_rows: Vec<(i64, String, String, i64)> = sec_stmt
+            .query_map([ts_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let mut sections = Vec::new();
+        for (sec_id, sec_name, sec_desc, _sec_order) in sec_rows {
+            let mut item_stmt = conn
+                .prepare(
+                    "SELECT title FROM shared_section_items WHERE section_id = ?1 ORDER BY sort_order",
+                )
+                .map_err(|e| e.to_string())?;
+
+            let items: Vec<String> = item_stmt
+                .query_map([sec_id], |r| r.get(0))
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            sections.push(json!({
+                "name": sec_name,
+                "description": sec_desc,
+                "items": items,
+            }));
+        }
+
+        sprints.push(json!({
+            "number": ts_order + 1,
+            "name": ts_name,
+            "description": ts_desc,
+            "sections": sections,
+        }));
+    }
+
     Ok(json!({ "template": template, "sprints": sprints }))
+}
+
+/// Full project plan: every sprint with every section and every item.
+fn handle_get_full_project_plan(conn: &Connection, params: &Value) -> Result<Value, String> {
+    let project_id = require_project_id(params, conn)?;
+
+    let project_name: String = conn
+        .query_row("SELECT name FROM projects WHERE id = ?1", [project_id], |r| r.get(0))
+        .unwrap_or_default();
+
+    let (total_checked, total_items): (i64, i64) = conn
+        .query_row(
+            "SELECT \
+             (SELECT count(*) FROM project_items pi JOIN project_sprint_sections pss ON pi.section_id = pss.id JOIN project_sprints ps ON pss.sprint_id = ps.id WHERE ps.project_id = ?1 AND pi.checked = 1), \
+             (SELECT count(*) FROM project_items pi JOIN project_sprint_sections pss ON pi.section_id = pss.id JOIN project_sprints ps ON pss.sprint_id = ps.id WHERE ps.project_id = ?1)",
+            [project_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap_or((0, 0));
+
+    let mut s_stmt = conn
+        .prepare(
+            "SELECT id, name, description, status, sort_order FROM project_sprints
+             WHERE project_id = ?1 ORDER BY sort_order",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let sprint_rows: Vec<(i64, String, String, String, i64)> = s_stmt
+        .query_map([project_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut sprints = Vec::new();
+    for (sprint_id, sprint_name, sprint_desc, sprint_status, sort_order) in sprint_rows {
+        let mut sec_stmt = conn
+            .prepare(
+                "SELECT pss.id, pss.name,
+                        (SELECT count(*) FROM project_items pi WHERE pi.section_id = pss.id),
+                        (SELECT count(*) FROM project_items pi WHERE pi.section_id = pss.id AND pi.checked = 1)
+                 FROM project_sprint_sections pss
+                 WHERE pss.sprint_id = ?1 ORDER BY pss.sort_order",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let sec_rows: Vec<(i64, String, i64, i64)> = sec_stmt
+            .query_map([sprint_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let mut sections = Vec::new();
+        for (sec_id, sec_name, item_count, checked_count) in &sec_rows {
+            let mut item_stmt = conn
+                .prepare(
+                    "SELECT id, title, checked FROM project_items WHERE section_id = ?1 ORDER BY sort_order",
+                )
+                .map_err(|e| e.to_string())?;
+
+            let items: Vec<Value> = item_stmt
+                .query_map([sec_id], |r| {
+                    Ok(json!({
+                        "id": r.get::<_, i64>(0)?,
+                        "title": r.get::<_, String>(1)?,
+                        "checked": r.get::<_, i64>(2)? != 0,
+                    }))
+                })
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            sections.push(json!({
+                "id": sec_id,
+                "name": sec_name,
+                "checked": checked_count,
+                "total": item_count,
+                "items": items,
+            }));
+        }
+
+        let sprint_checked: i64 = sec_rows.iter().map(|(_, _, _, c)| c).sum();
+        let sprint_total: i64 = sec_rows.iter().map(|(_, _, t, _)| t).sum();
+
+        sprints.push(json!({
+            "id": sprint_id,
+            "number": sort_order + 1,
+            "name": sprint_name,
+            "description": sprint_desc,
+            "status": sprint_status,
+            "checked": sprint_checked,
+            "total": sprint_total,
+            "sections": sections,
+        }));
+    }
+
+    Ok(json!({
+        "project_id": project_id,
+        "project_name": project_name,
+        "total_checked": total_checked,
+        "total_items": total_items,
+        "sprints": sprints,
+    }))
 }
 
 fn handle_list_shared_sections(conn: &Connection) -> Result<Value, String> {
@@ -943,11 +1100,10 @@ fn handle_add_task(conn: &Connection, params: &Value) -> Result<Value, String> {
 
     // Find or create section
     let section_id: i64 = if let Some(name) = section_name {
-        // Try to find existing section
-        let escaped = like_escape(name);
+        // Try to find existing section — exact match, case-insensitive
         let existing: Option<i64> = conn.query_row(
-                "SELECT id FROM project_sprint_sections WHERE sprint_id = ?1 AND name = ?2 ESCAPE '\\' LIMIT 1",
-                rusqlite::params![sprint_id, escaped],
+                "SELECT id FROM project_sprint_sections WHERE sprint_id = ?1 AND lower(name) = lower(?2) LIMIT 1",
+                rusqlite::params![sprint_id, name],
                 |row| row.get(0),
             )
             .ok();
@@ -1752,6 +1908,7 @@ fn main() {
                     "uncheck_task" => handle_uncheck_task(conn_ref, &tool_params),
                     "add_section" => handle_add_section(conn_ref, &tool_params),
                     "search_tasks" => handle_search_tasks(conn_ref, &tool_params),
+                    "get_full_project_plan" => handle_get_full_project_plan(conn_ref, &tool_params),
                     _ => Err(format!("Unknown tool: {}", tool)),
                 };
 
