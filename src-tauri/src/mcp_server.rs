@@ -1657,6 +1657,8 @@ fn handle_uncheck_task(conn: &Connection, params: &Value) -> Result<Value, Strin
 }
 
 /// Add a new section to the active sprint.
+/// Idempotent: if a section with the same name already exists in this sprint,
+/// returns that section instead of creating a duplicate.
 fn handle_add_section(conn: &Connection, params: &Value) -> Result<Value, String> {
     let project_id = require_project_id(params, conn)?;
     let name = params
@@ -1676,6 +1678,15 @@ fn handle_add_section(conn: &Connection, params: &Value) -> Result<Value, String
         )
         .map_err(|_| "No active sprint".to_string())?;
 
+    // Return existing section if name matches (case-insensitive) — prevents duplicates
+    if let Ok(existing_id) = conn.query_row(
+        "SELECT id FROM project_sprint_sections WHERE sprint_id = ?1 AND lower(name) = lower(?2) LIMIT 1",
+        rusqlite::params![sprint_id, name],
+        |row| row.get::<_, i64>(0),
+    ) {
+        return Ok(json!({ "ok": true, "section_id": existing_id, "name": name, "existed": true }));
+    }
+
     let max_order: i64 = conn
         .query_row(
             "SELECT COALESCE(MAX(sort_order), -1) FROM project_sprint_sections WHERE sprint_id = ?1",
@@ -1691,7 +1702,7 @@ fn handle_add_section(conn: &Connection, params: &Value) -> Result<Value, String
     .map_err(|e| e.to_string())?;
 
     let section_id = conn.last_insert_rowid();
-    Ok(json!({ "ok": true, "section_id": section_id, "name": name }))
+    Ok(json!({ "ok": true, "section_id": section_id, "name": name, "existed": false }))
 }
 
 /// Search all tasks in the project by keyword.
@@ -1813,6 +1824,27 @@ fn main() {
     let conn = Connection::open(&db_path).expect("Failed to open DB");
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
         .ok();
+
+    // Startup migration: merge duplicate project_sprint_sections within the same sprint.
+    // This cleans up any duplicates created by a previous bug where add_task created a
+    // new section instead of finding the existing one with the same name.
+    conn.execute_batch(
+        "UPDATE project_items
+         SET section_id = (
+             SELECT MIN(s.id)
+             FROM project_sprint_sections s
+             JOIN project_sprint_sections src ON src.id = project_items.section_id
+             WHERE s.sprint_id = src.sprint_id
+               AND lower(s.name) = lower(src.name)
+         )
+         WHERE section_id NOT IN (
+             SELECT MIN(id) FROM project_sprint_sections GROUP BY sprint_id, lower(name)
+         );
+         DELETE FROM project_sprint_sections
+         WHERE id NOT IN (
+             SELECT MIN(id) FROM project_sprint_sections GROUP BY sprint_id, lower(name)
+         );"
+    ).ok();
     let conn = Mutex::new(conn);
 
     let stdin = io::stdin();
@@ -1866,7 +1898,8 @@ fn main() {
                 // scope session to project if project_uuid is provided
                 let params = request.params.as_ref().cloned().unwrap_or(json!({}));
                 if let Some(uuid) = params.get("project_uuid").and_then(|v| v.as_str()) {
-                    if let Some(pid) = get_project_id_from_uuid(&*conn_guard, uuid) {
+                    let conn_ref_init: &Connection = &conn_guard;
+                    if let Some(pid) = get_project_id_from_uuid(conn_ref_init, uuid) {
                         set_active_project(pid);
                     }
                 }
@@ -1881,7 +1914,7 @@ fn main() {
             "initialized" => Ok(null_value()),
             "tools/list" => Ok(json!({ "tools": tool_definitions() })),
             "tools/call" => {
-                let conn_ref = &*conn_guard;
+                let conn_ref: &Connection = &conn_guard;
                 let params = request.params.as_ref().unwrap();
                 let tool = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let tool_params = params.get("arguments").cloned().unwrap_or(json!({}));
