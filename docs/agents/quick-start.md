@@ -1,5 +1,8 @@
 # DevStar MCP — 5-Minute Quick Start
 
+> For full agent prompt scenarios and copy-paste prompts for every workflow, see
+> **[docs/agents/PROMPTS.md](./PROMPTS.md)**
+
 ## What is this?
 
 DevStar has an MCP server that lets AI agents (Claude Code, OpenCode, Antigravity, etc.) interact with your project plans. Agents can browse templates, create projects, track sprint progress, and log errors — all through your DevStar database.

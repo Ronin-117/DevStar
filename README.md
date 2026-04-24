@@ -12,6 +12,7 @@
   <a href="#getting-started">Getting Started</a> •
   <a href="#ai-agent-integration">AI Agent Integration</a> •
   <a href="#mcp-server">MCP Server</a> •
+  <a href="docs/agents/PROMPTS.md">Agent Prompts</a> •
   <a href="#architecture">Architecture</a> •
   <a href="#building-from-source">Build from Source</a>
 </p>
@@ -67,7 +68,11 @@ sudo apt-get install -f  # Fix any missing dependencies
 
 ## AI Agent Integration
 
-DevStar's MCP server enables AI coding agents to fully participate in your project workflow. An agent working in your project directory can:
+DevStar's MCP server enables AI coding agents to fully participate in your project workflow.
+See **[docs/agents/PROMPTS.md](docs/agents/PROMPTS.md)** for ready-to-paste prompts covering
+every scenario: new project planning, implementation, resuming sessions, health checks, and more.
+
+An agent working in your project directory can:
 
 ### Typical Agent Workflow
 
@@ -93,7 +98,7 @@ Changes made by the agent (checking tasks, adding items, advancing sprints) appe
 
 ```
 ┌─────────────────────────────────────────────┐
-│                 DevStar App                  │
+│                 DevStar App                 │
 ├──────────────────┬──────────────────────────┤
 │   Frontend       │   Backend (Rust)         │
 │   React + TS     │   SQLite + Tauri         │
@@ -141,29 +146,31 @@ The built installer will be in `src-tauri/target/release/bundle/`.
 
 DevStar includes a built-in **MCP (Model Context Protocol) server** that allows AI coding agents to interact with your project plans programmatically. The server runs as a background process when DevStar launches.
 
-### Available Tools (20 total)
+### Available Tools (22 total)
 
 | Tool | Description |
 |------|-------------|
+| `initialize` | Scope agent session to a project via `project_uuid` from `.devstar.json` |
 | `get_project_context` | Zero-config discovery via `.devstar.json`. Returns project overview + active sprint with all tasks |
+| `get_full_project_plan` | **Complete project tree** — every sprint, every section, every task with checked status. Use this first. |
 | `dashboard` | Compact overview of ALL projects — name, progress %, active sprint |
 | `create_project` | Create from template + write `.devstar.json` for agent scoping |
 | `get_active_sprint_detail` | Current active sprint with all sections and tasks |
 | `get_project_sprints` | ALL sprints with status, progress, and section counts |
 | `get_sprint` | Get any sprint by number (1-based) or name with full task list |
 | `get_tasks` | List tasks in active sprint, filtered by status (pending/done/all) |
-| `add_task` | Add a task to active sprint by title only — no IDs needed |
+| `add_task` | Add a task to active sprint by title only — no IDs needed, finds/creates section by name |
 | `check_task` | Mark a task done by title (partial, case-insensitive match) |
 | `uncheck_task` | Undo a task check by title |
 | `update_item` | Low-level: check/uncheck/add notes by item ID |
 | `add_item` | Low-level: add task to specific section by section ID |
-| `add_section` | Add a new section/category to the active sprint |
+| `add_section` | Add a new section/category to the active sprint (idempotent — won't create duplicates) |
 | `search_tasks` | Search ALL tasks across ALL sprints by keyword |
 | `complete_sprint` | Mark all tasks done, mark sprint done, activate next sprint |
 | `get_progress` | Project completion stats (checked/total/percentage) |
 | `log_error` | Log an error as an unchecked task with agent attribution |
 | `list_templates` | All available templates with sprint counts |
-| `get_template` | Template structure (sprints, sections) |
+| `get_template` | **Full template tree** — every sprint, section, and item. Use before `create_project`. |
 | `list_shared_sections` | Reusable checklist blocks |
 | `list_shared_sprints` | Reusable sprint templates |
 
